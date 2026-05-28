@@ -1,0 +1,5 @@
+/vendor/
+form.php.bak
+.gemini/
+.git/
+*.log

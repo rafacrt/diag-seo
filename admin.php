@@ -1,0 +1,618 @@
+<?php
+// ============================================================
+//  Rajo Diagnóstico — Painel de Administração Master
+// ============================================================
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/auth.php';
+
+// Bloqueio rigoroso: apenas analistas Master podem acessar
+exigir_master();
+
+$erro = '';
+$sucesso = '';
+$aba_ativa = $_GET['aba'] ?? 'usuarios';
+
+// ID do administrador logado (para impedir auto-exclusão e auto-rebaixamento)
+$meu_id = (int)$_SESSION['usuario_id'];
+
+// ─── PROCESSAMENTO DE AÇÕES VIA POST ─────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $acao = $_POST['acao'] ?? '';
+
+    try {
+        // 1. ALTERAR TIPO DE USUÁRIO
+        if ($acao === 'atualizar_tipo') {
+            $user_id = (int)($_POST['usuario_id'] ?? 0);
+            $novo_tipo = trim($_POST['tipo'] ?? 'comum');
+
+            if (!in_array($novo_tipo, ['comum', 'master'])) {
+                $erro = 'Tipo de usuário inválido.';
+            } elseif ($user_id === $meu_id) {
+                $erro = 'Você não pode alterar o seu próprio tipo de acesso.';
+            } else {
+                $stmt = db()->prepare("UPDATE usuarios SET tipo = :tipo WHERE id = :id");
+                $stmt->execute([':tipo' => $novo_tipo, ':id' => $user_id]);
+                $sucesso = 'Nível de acesso do usuário atualizado com sucesso!';
+            }
+        }
+
+        // 2. RESETAR SENHA DO USUÁRIO
+        elseif ($acao === 'resetar_senha') {
+            $user_id = (int)($_POST['usuario_id'] ?? 0);
+            $nova_senha = $_POST['nova_senha'] ?? '';
+            $confirmar_senha = $_POST['confirmar_senha'] ?? '';
+
+            if ($nova_senha === '' || $confirmar_senha === '') {
+                $erro = 'Preencha a nova senha e a confirmação.';
+            } elseif ($nova_senha !== $confirmar_senha) {
+                $erro = 'As senhas informadas não correspondem.';
+            } else {
+                // Validação de força de senha
+                $tem_maiuscula = preg_match('/[A-Z]/', $nova_senha);
+                $tem_minuscula = preg_match('/[a-z]/', $nova_senha);
+                $tem_numero    = preg_match('/[0-9]/', $nova_senha);
+                $tem_especial  = preg_match('/[^A-Za-z0-9]/', $nova_senha);
+                $tamanho_ok    = strlen($nova_senha) >= 8;
+
+                if (!$tamanho_ok || !$tem_maiuscula || !$tem_minuscula || !$tem_numero || !$tem_especial) {
+                    $erro = 'A nova senha informada não atende aos requisitos mínimos de segurança (8 dígitos, maiúscula, minúscula, número e caractere especial).';
+                } else {
+                    $senha_hash = password_hash($nova_senha, PASSWORD_DEFAULT);
+                    $stmt = db()->prepare("UPDATE usuarios SET senha = :senha WHERE id = :id");
+                    $stmt->execute([':senha' => $senha_hash, ':id' => $user_id]);
+                    $sucesso = 'Senha do analista redefinida com sucesso!';
+                }
+            }
+            $aba_ativa = 'usuarios';
+        }
+
+        // 3. EXCLUIR USUÁRIO
+        elseif ($acao === 'excluir_usuario') {
+            $user_id = (int)($_POST['usuario_id'] ?? 0);
+
+            if ($user_id === $meu_id) {
+                $erro = 'Você não pode excluir a sua própria conta de administrador.';
+            } else {
+                // Exclui o usuário. Por ter constraint ON DELETE CASCADE, deleta todos os seus relatórios
+                $stmt = db()->prepare("DELETE FROM usuarios WHERE id = ?");
+                $stmt->execute([$user_id]);
+                $sucesso = 'Conta do analista e todos os relatórios vinculados foram excluídos permanentemente!';
+            }
+            $aba_ativa = 'usuarios';
+        }
+
+        // 4. CRIAR NOVO AVISO GLOBAL
+        elseif ($acao === 'criar_aviso') {
+            $titulo = trim($_POST['titulo'] ?? '');
+            $mensagem = trim($_POST['mensagem'] ?? '');
+            $tipo = trim($_POST['tipo'] ?? 'info');
+            $ativo = isset($_POST['ativo']) ? 1 : 0;
+
+            if ($titulo === '' || $mensagem === '') {
+                $erro = 'Por favor, preencha o título e o conteúdo do aviso.';
+            } elseif (!in_array($tipo, ['info', 'warning', 'danger', 'success'])) {
+                $erro = 'Tipo de aviso inválido.';
+            } else {
+                $stmt = db()->prepare("INSERT INTO avisos (titulo, mensagem, tipo, ativo) VALUES (:titulo, :mensagem, :tipo, :ativo)");
+                $stmt->execute([
+                    ':titulo'   => $titulo,
+                    ':mensagem' => $mensagem,
+                    ':tipo'     => $tipo,
+                    ':ativo'    => $ativo
+                ]);
+                $sucesso = 'Novo aviso global publicado com sucesso!';
+            }
+            $aba_ativa = 'avisos';
+        }
+
+        // 5. ALTERAR STATUS DO AVISO (ATIVAR/DESATIVAR)
+        elseif ($acao === 'alterar_status_aviso') {
+            $aviso_id = (int)($_POST['aviso_id'] ?? 0);
+            $novo_status = (int)($_POST['ativo'] ?? 0);
+
+            $stmt = db()->prepare("UPDATE avisos SET ativo = ? WHERE id = ?");
+            $stmt->execute([$novo_status, $aviso_id]);
+            $sucesso = 'Status da notificação atualizado com sucesso!';
+            $aba_ativa = 'avisos';
+        }
+
+        // 6. EXCLUIR AVISO
+        elseif ($acao === 'excluir_aviso') {
+            $aviso_id = (int)($_POST['aviso_id'] ?? 0);
+
+            $stmt = db()->prepare("DELETE FROM avisos WHERE id = ?");
+            $stmt->execute([$aviso_id]);
+            $sucesso = 'Notificação global removida do painel!';
+            $aba_ativa = 'avisos';
+        }
+
+    } catch (Throwable $e) {
+        $erro = 'Erro ao processar solicitação: ' . $e->getMessage();
+    }
+}
+
+// ─── CARREGAMENTO DE DADOS DO BANCO ──────────────────────────────────
+// Buscar todos os usuários
+$usuarios = db()->query("SELECT id, nome, email, confirmado, tipo, criado_em FROM usuarios ORDER BY criado_em DESC")->fetchAll();
+
+// Buscar todos os avisos
+$avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM avisos ORDER BY criado_em DESC")->fetchAll();
+
+?>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Administração Master — <?= APP_NAME ?></title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="assets/style.css?v=<?= time() ?>">
+    <style>
+        .admin-nav-tabs .nav-link {
+            border: none;
+            color: #64748b;
+            font-weight: 600;
+            padding: 12px 24px;
+            border-bottom: 3px solid transparent;
+            transition: all 0.25s ease;
+            font-size: 0.95rem;
+        }
+        .admin-nav-tabs .nav-link.active {
+            color: #1A4FBB;
+            border-bottom: 3px solid #1A4FBB;
+            background: none;
+        }
+        .admin-nav-tabs .nav-link:hover {
+            color: #1A4FBB;
+            border-bottom-color: rgba(26, 79, 187, 0.25);
+        }
+        .table-responsive {
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.015);
+        }
+        .btn-action-sm {
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark rajo-navbar px-4">
+  <a href="index.php" class="navbar-brand fw-bold fs-4 d-flex align-items-center gap-2 text-decoration-none">
+    <span class="rajo-logo-icon">R</span> Rajo Diagnóstico
+  </a>
+  <div class="d-flex align-items-center gap-3">
+    <a href="index.php" class="btn btn-outline-light btn-sm d-inline-flex align-items-center gap-1" style="border-radius: 8px;">
+      <i class="bi bi-arrow-left"></i> Voltar ao Painel
+    </a>
+    <a href="logout.php" class="btn btn-sm btn-outline-light px-3 py-1.5 d-inline-flex align-items-center gap-1" style="border-radius: 8px; font-weight: 500; font-size: 0.85rem; border-color: rgba(255,255,255,0.25);">
+      <i class="bi bi-box-arrow-right"></i> Sair
+    </a>
+  </div>
+</nav>
+
+<div class="container py-5" style="max-width: 1200px;">
+
+    <!-- Cabeçalho de Controle -->
+    <div class="mb-5">
+        <h3 class="fw-extrabold mb-1" style="color: var(--dark-bg); font-family: var(--font-title);">Administração Master</h3>
+        <p class="text-muted small mb-0"><i class="bi bi-shield-lock-fill text-primary"></i> Painel exclusivo do proprietário. Gerencie acessos, altere senhas e configure avisos.</p>
+    </div>
+
+    <!-- Feedbacks de Ações -->
+    <?php if ($erro !== ''): ?>
+        <div class="alert alert-danger border-0 shadow-sm d-flex align-items-center gap-2 p-3 mb-4" style="border-radius: 12px;">
+            <i class="bi bi-exclamation-triangle-fill fs-5"></i>
+            <div class="small font-weight-bold"><?= htmlspecialchars($erro) ?></div>
+        </div>
+    <?php endif; ?>
+
+    <?php if ($sucesso !== ''): ?>
+        <div class="alert alert-success border-0 shadow-sm d-flex align-items-center gap-2 p-3 mb-4" style="border-radius: 12px; background-color: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d;">
+            <i class="bi bi-check-circle-fill fs-5 text-success"></i>
+            <div class="small font-weight-bold"><?= htmlspecialchars($sucesso) ?></div>
+        </div>
+    <?php endif; ?>
+
+    <!-- Abas de Navegação -->
+    <ul class="nav admin-nav-tabs border-bottom mb-4" id="adminTab" role="tablist">
+        <li class="nav-item">
+            <button class="nav-link <?= $aba_ativa === 'usuarios' ? 'active' : '' ?>" id="usuarios-tab" data-bs-toggle="tab" data-bs-target="#usuarios-pane" type="button" role="tab"><i class="bi bi-people me-2"></i>Controle de Analistas</button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link <?= $aba_ativa === 'avisos' ? 'active' : '' ?>" id="avisos-tab" data-bs-toggle="tab" data-bs-target="#avisos-pane" type="button" role="tab"><i class="bi bi-megaphone me-2"></i>Avisos do Sistema</button>
+        </li>
+    </ul>
+
+    <div class="tab-content" id="adminTabContent">
+
+        <!-- ══ ABA 1: GERENCIAMENTO DE USUÁRIOS ════════════════════════════════ -->
+        <div class="tab-pane fade <?= $aba_ativa === 'usuarios' ? 'show active' : '' ?>" id="usuarios-pane" role="tabpanel">
+            <div class="rajo-panel border-0 shadow-sm p-4 bg-white" style="border-radius: 16px;">
+                <div class="table-responsive">
+                    <table class="table align-middle mb-0 text-dark" style="font-size: 0.88rem;">
+                        <thead class="table-light text-muted">
+                            <tr>
+                                <th class="ps-3">Nome</th>
+                                <th>E-mail Comercial</th>
+                                <th>Status de Confirmação</th>
+                                <th>Nível de Acesso</th>
+                                <th>Data de Cadastro</th>
+                                <th class="text-end pe-3">Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($usuarios as $u): ?>
+                            <tr>
+                                <td class="ps-3 fw-bold text-dark"><?= htmlspecialchars($u['nome']) ?></td>
+                                <td class="font-monospace text-muted"><?= htmlspecialchars($u['email']) ?></td>
+                                <td>
+                                    <?php if ((int)$u['confirmado'] === 1): ?>
+                                        <span class="badge bg-success-subtle text-success border border-success-subtle px-3 py-1.5" style="border-radius: 12px; font-size: 0.72rem;">✓ Confirmado</span>
+                                    <?php else: ?>
+                                        <span class="badge bg-warning-subtle text-warning border border-warning-subtle px-3 py-1.5" style="border-radius: 12px; font-size: 0.72rem;">⚠ Aguardando</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td>
+                                    <?php if ($u['tipo'] === 'master'): ?>
+                                        <span class="badge bg-primary px-3 py-1.5" style="border-radius: 12px; font-size: 0.72rem;"><i class="bi bi-shield-lock-fill me-1"></i>Master</span>
+                                    <?php else: ?>
+                                        <span class="badge bg-secondary px-3 py-1.5" style="border-radius: 12px; font-size: 0.72rem;">Comum (Analista)</span>
+                                    <?php endif; ?>
+                                </td>
+                                <td class="text-muted"><?= date('d/m/Y H:i', strtotime($u['criado_em'])) ?></td>
+                                <td class="text-end pe-3">
+                                    <div class="d-flex justify-content-end gap-1.5">
+                                        <!-- Botão Atualizar Perfil -->
+                                        <?php if ((int)$u['id'] !== $meu_id): ?>
+                                        <button class="btn btn-sm btn-outline-primary btn-action-sm" 
+                                                onclick="abrirModalTipo(<?= $u['id'] ?>, '<?= htmlspecialchars($u['nome']) ?>', '<?= $u['tipo'] ?>')" 
+                                                title="Alterar Nível de Acesso">
+                                            <i class="bi bi-shield-exclamation"></i>
+                                        </button>
+                                        <?php endif; ?>
+
+                                        <!-- Botão Redefinir Senha -->
+                                        <button class="btn btn-sm btn-outline-warning btn-action-sm" 
+                                                onclick="abrirModalSenha(<?= $u['id'] ?>, '<?= htmlspecialchars($u['nome']) ?>')" 
+                                                title="Resetar Senha Comercial">
+                                            <i class="bi bi-key-fill text-warning"></i>
+                                        </button>
+
+                                        <!-- Botão Excluir Usuário -->
+                                        <?php if ((int)$u['id'] !== $meu_id): ?>
+                                        <button class="btn btn-sm btn-outline-danger btn-action-sm" 
+                                                onclick="abrirModalExcluir(<?= $u['id'] ?>, '<?= htmlspecialchars($u['nome']) ?>')" 
+                                                title="Excluir Conta por Completo">
+                                            <i class="bi bi-trash3-fill"></i>
+                                        </button>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ══ ABA 2: GERENCIAMENTO DE AVISOS GLOBAIS ══════════════════════════ -->
+        <div class="tab-pane fade <?= $aba_active = $aba_ativa === 'avisos' ? 'show active' : '' ?>" id="avisos-pane" role="tabpanel">
+            <div class="row g-4">
+                <!-- Formulário de cadastro de avisos -->
+                <div class="col-12 col-lg-4">
+                    <div class="rajo-panel border-0 shadow-sm p-4 bg-white" style="border-radius: 16px;">
+                        <h6 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-megaphone-fill text-primary me-2"></i>Publicar Aviso Global</h6>
+                        <form action="admin.php?aba=avisos" method="POST">
+                            <input type="hidden" name="acao" value="criar_aviso">
+                            
+                            <div class="mb-3">
+                                <label for="titulo" class="form-label">Título da Notificação</label>
+                                <input type="text" id="titulo" name="titulo" class="form-control form-control-sm" placeholder="Ex.: Manutenção no Banco de Dados" required style="border-radius: 8px;">
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="mensagem" class="form-label">Conteúdo da Notificação</label>
+                                <textarea id="mensagem" name="mensagem" class="form-control form-control-sm" rows="3" placeholder="Mensagem detalhada..." required style="border-radius: 8px;"></textarea>
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="tipo" class="form-label">Cor do Alerta (Severidade)</label>
+                                <select id="tipo" name="tipo" class="form-select form-select-sm" style="border-radius: 8px;">
+                                    <option value="info">🔵 Azul (Informação Geral)</option>
+                                    <option value="warning">🟡 Laranja (Atenção / Manutenção)</option>
+                                    <option value="danger">🔴 Vermelho (Impedimentos Críticos)</option>
+                                    <option value="success">🟢 Verde (Agradecimentos / Eventos)</option>
+                                </select>
+                            </div>
+
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" name="ativo" id="ativo" value="1" checked style="cursor: pointer;">
+                                <label class="form-check-label fw-semibold text-muted small" for="ativo" style="cursor: pointer;">Ativar Imediatamente</label>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary btn-sm w-100 py-2 fw-semibold" style="border-radius: 8px;">
+                                Publicar Aviso <i class="bi bi-send ms-1"></i>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Lista de avisos já criados -->
+                <div class="col-12 col-lg-8">
+                    <div class="rajo-panel border-0 shadow-sm p-4 bg-white" style="border-radius: 16px;">
+                        <h6 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-list-task text-primary me-2"></i>Avisos Publicados</h6>
+                        
+                        <?php if (empty($avisos)): ?>
+                            <div class="text-center py-5">
+                                <i class="bi bi-megaphone text-muted fs-2 mb-2 d-block"></i>
+                                <span class="text-muted small">Nenhum aviso global cadastrado no sistema.</span>
+                            </div>
+                        <?php else: ?>
+                            <div class="table-responsive">
+                                <table class="table align-middle mb-0 text-dark" style="font-size: 0.88rem;">
+                                    <thead class="table-light text-muted">
+                                        <tr>
+                                            <th class="ps-3">Aviso</th>
+                                            <th>Estilo</th>
+                                            <th>Status</th>
+                                            <th>Criado Em</th>
+                                            <th class="text-end pe-3">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($avisos as $a): ?>
+                                        <tr>
+                                            <td class="ps-3">
+                                                <strong class="text-dark d-block mb-0.5"><?= htmlspecialchars($a['titulo']) ?></strong>
+                                                <span class="text-muted small d-block" style="max-width: 320px; line-height: 1.4;"><?= htmlspecialchars($a['mensagem']) ?></span>
+                                            </td>
+                                            <td>
+                                                <span class="badge bg-<?= $a['tipo'] ?>-subtle text-<?= $a['tipo'] ?> border border-<?= $a['tipo'] ?>-subtle px-2.5 py-1 text-uppercase" style="font-size: 0.65rem; border-radius: 8px;">
+                                                    <?= $a['tipo'] ?>
+                                                </span>
+                                            </td>
+                                            <td>
+                                                <form action="admin.php?aba=avisos" method="POST" class="d-inline">
+                                                    <input type="hidden" name="acao" value="alterar_status_aviso">
+                                                    <input type="hidden" name="aviso_id" value="<?= $a['id'] ?>">
+                                                    <input type="hidden" name="ativo" value="<?= $a['ativo'] == 1 ? '0' : '1' ?>">
+                                                    <button type="submit" class="btn btn-link p-0 text-decoration-none small border-0 bg-transparent">
+                                                        <?php if ($a['ativo'] == 1): ?>
+                                                            <span class="badge bg-success-subtle text-success border border-success-subtle px-2.5 py-1" style="font-size: 0.68rem; border-radius: 8px;">Ativo</span>
+                                                        <?php else: ?>
+                                                            <span class="badge bg-secondary-subtle text-muted border border-secondary-subtle px-2.5 py-1" style="font-size: 0.68rem; border-radius: 8px;">Desativado</span>
+                                                        <?php endif; ?>
+                                                    </button>
+                                                </form>
+                                            </td>
+                                            <td class="text-muted font-monospace" style="font-size: 0.78rem;"><?= date('d/m/Y H:i', strtotime($a['criado_em'])) ?></td>
+                                            <td class="text-end pe-3">
+                                                <form action="admin.php?aba=avisos" method="POST" onsubmit="return confirm('Deseja realmente remover esta notificação global do sistema?')" class="d-inline">
+                                                    <input type="hidden" name="acao" value="excluir_aviso">
+                                                    <input type="hidden" name="aviso_id" value="<?= $a['id'] ?>">
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger btn-action-sm">
+                                                        <i class="bi bi-trash-fill"></i>
+                                                    </button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ══ MODAL 1: EDITAR TIPO/NÍVEL DE ACESSO ════════════════════════════ -->
+<div class="modal fade" id="modalTipo" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content border-0 shadow" style="border-radius: 16px;">
+      <form action="admin.php?aba=usuarios" method="POST">
+        <input type="hidden" name="acao" value="atualizar_tipo">
+        <input type="hidden" name="usuario_id" id="tipo_usuario_id">
+        
+        <div class="modal-header border-0 pb-0">
+          <h6 class="modal-title fw-bold text-dark d-flex align-items-center gap-1.5" style="font-family: var(--font-title);"><i class="bi bi-shield-exclamation text-primary fs-5"></i> Nível de Acesso</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" style="font-size: 0.8rem;"></button>
+        </div>
+        <div class="modal-body pt-3">
+          <p class="small text-muted mb-3">Selecione o nível de permissões comerciais para o analista <strong id="tipo_nome_usuario" class="text-dark"></strong>:</p>
+          <select name="tipo" id="tipo_select" class="form-select form-select-sm" style="border-radius: 8px;">
+              <option value="comum">Comum (Acesso aos próprios diagnósticos)</option>
+              <option value="master">Master (Controle administrativo global)</option>
+          </select>
+        </div>
+        <div class="modal-footer border-0 pt-0 justify-content-end gap-2">
+          <button type="button" class="btn btn-sm btn-light px-3 py-2 fw-semibold" style="border-radius: 8px;" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" class="btn btn-sm btn-primary px-3 py-2 fw-semibold" style="border-radius: 8px;">Confirmar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL 2: RESETAR SENHA DO ANALISTA ═════════════════════════════ -->
+<div class="modal fade" id="modalSenha" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow" style="border-radius: 16px;">
+      <form action="admin.php?aba=usuarios" method="POST" autocomplete="off" onsubmit="return validarSenhaReset(event)">
+        <input type="hidden" name="acao" value="resetar_senha">
+        <input type="hidden" name="usuario_id" id="senha_usuario_id">
+        
+        <div class="modal-header border-0 pb-0">
+          <h6 class="modal-title fw-bold text-dark d-flex align-items-center gap-1.5" style="font-family: var(--font-title);"><i class="bi bi-key-fill text-warning fs-5"></i> Redefinir Senha Comercial</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" style="font-size: 0.8rem;"></button>
+        </div>
+        <div class="modal-body pt-3">
+          <p class="small text-muted mb-3">Cadastre uma nova senha forte para o analista <strong id="senha_nome_usuario" class="text-dark"></strong>:</p>
+          
+          <div class="mb-3">
+              <label for="modal_nova_senha" class="form-label small mb-1 fw-bold">Nova Senha Forte</label>
+              <div class="input-group">
+                  <input type="password" id="modal_nova_senha" name="nova_senha" class="form-control form-control-sm" placeholder="Mínimo 8 caracteres..." required onkeyup="analisarSenhaReset(this.value)" style="border-radius: 8px 0 0 8px;">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleSenhaModal('modal_nova_senha', this)" style="border-radius: 0 8px 8px 0;"><i class="bi bi-eye"></i></button>
+              </div>
+          </div>
+
+          <div class="mb-3">
+              <label for="modal_confirmar_senha" class="form-label small mb-1 fw-bold">Confirme a Nova Senha</label>
+              <div class="input-group">
+                  <input type="password" id="modal_confirmar_senha" name="confirmar_senha" class="form-control form-control-sm" placeholder="Repita a nova senha..." required style="border-radius: 8px 0 0 8px;">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleSenhaModal('modal_confirmar_senha', this)" style="border-radius: 0 8px 8px 0;"><i class="bi bi-eye"></i></button>
+              </div>
+          </div>
+
+          <!-- Box de validação dinâmica -->
+          <div class="password-strength-box p-3 bg-light border" style="border-radius: 12px; font-size: 0.74rem;">
+                <div class="strength-title font-weight-bold mb-1.5">Requisitos exigidos:</div>
+                <div class="strength-rule" id="m-rule-len" style="font-size:0.75rem;"><i class="bi bi-circle"></i> Mínimo de 8 caracteres</div>
+                <div class="strength-rule" id="m-rule-upper" style="font-size:0.75rem;"><i class="bi bi-circle"></i> Pelo menos 1 maiúscula (A-Z)</div>
+                <div class="strength-rule" id="m-rule-lower" style="font-size:0.75rem;"><i class="bi bi-circle"></i> Pelo menos 1 minúscula (a-z)</div>
+                <div class="strength-rule" id="m-rule-num" style="font-size:0.75rem;"><i class="bi bi-circle"></i> Pelo menos 1 número (0-9)</div>
+                <div class="strength-rule" id="m-rule-special" style="font-size:0.75rem;"><i class="bi bi-circle"></i> Pelo menos 1 caractere especial (!@#$...)</div>
+          </div>
+
+        </div>
+        <div class="modal-footer border-0 pt-0 justify-content-end gap-2">
+          <button type="button" class="btn btn-sm btn-light px-3 py-2 fw-semibold" style="border-radius: 8px;" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" class="btn btn-sm btn-warning px-3 py-2 fw-semibold text-dark" style="border-radius: 8px;">Redefinir Senha</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL 3: CONFIRMAR EXCLUSÃO DE CONTA ════════════════════════════ -->
+<div class="modal fade" id="modalExcluirUsuario" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content border-0 shadow" style="border-radius: 16px;">
+      <form action="admin.php?aba=usuarios" method="POST">
+        <input type="hidden" name="acao" value="excluir_usuario">
+        <input type="hidden" name="usuario_id" id="excluir_usuario_id">
+        
+        <div class="modal-header border-0 pb-0">
+          <h6 class="modal-title fw-bold text-danger d-flex align-items-center gap-1.5" style="font-family: var(--font-title);"><i class="bi bi-exclamation-octagon-fill text-danger fs-5"></i> Excluir Conta</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" style="font-size: 0.8rem;"></button>
+        </div>
+        <div class="modal-body pt-3">
+          <p class="small text-muted mb-0">Você realmente deseja excluir permanentemente o analista <strong id="excluir_nome_usuario" class="text-dark"></strong>?</p>
+          <span class="badge bg-danger-subtle text-danger border border-danger-subtle d-block text-center mt-3 py-2 small" style="border-radius: 8px; font-size: 0.72rem; line-height: 1.4;">Esta ação excluirá por cascata todos os diagnósticos vinculados à conta dele.</span>
+        </div>
+        <div class="modal-footer border-0 pt-0 justify-content-end gap-2">
+          <button type="button" class="btn btn-sm btn-light px-3 py-2 fw-semibold" style="border-radius: 8px;" data-bs-dismiss="modal">Voltar</button>
+          <button type="submit" class="btn btn-sm btn-danger px-3 py-2 fw-semibold" style="border-radius: 8px;">Excluir Conta</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/js/bootstrap.bundle.min.js"></script>
+<script>
+// Abertura dinâmica dos modais
+function abrirModalTipo(id, nome, tipo) {
+    document.getElementById('tipo_usuario_id').value = id;
+    document.getElementById('tipo_nome_usuario').textContent = nome;
+    document.getElementById('tipo_select').value = tipo;
+    new bootstrap.Modal(document.getElementById('modalTipo')).show();
+}
+
+function abrirModalSenha(id, nome) {
+    document.getElementById('senha_usuario_id').value = id;
+    document.getElementById('senha_nome_usuario').textContent = nome;
+    document.getElementById('modal_nova_senha').value = '';
+    document.getElementById('modal_confirmar_senha').value = '';
+    analisarSenhaReset('');
+    new bootstrap.Modal(document.getElementById('modalSenha')).show();
+}
+
+function abrirModalExcluir(id, nome) {
+    document.getElementById('excluir_usuario_id').value = id;
+    document.getElementById('excluir_nome_usuario').textContent = nome;
+    new bootstrap.Modal(document.getElementById('modalExcluirUsuario')).show();
+}
+
+// Ocultar/mostrar senha no modal
+function toggleSenhaModal(inputId, button) {
+    const input = document.getElementById(inputId);
+    const icon = button.querySelector('i');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.className = 'bi bi-eye-slash';
+    } else {
+        input.type = 'password';
+        icon.className = 'bi bi-eye';
+    }
+}
+
+// Validador de senha do modal em tempo real
+let resetSenhaValida = false;
+
+function analisarSenhaReset(senha) {
+    const rules = {
+        len: senha.length >= 8,
+        upper: /[A-Z]/.test(senha),
+        lower: /[a-z]/.test(senha),
+        num: /[0-9]/.test(senha),
+        special: /[^A-Za-z0-9]/.test(senha)
+    };
+
+    atualizarRegraModal('m-rule-len', rules.len);
+    atualizarRegraModal('m-rule-upper', rules.upper);
+    atualizarRegraModal('m-rule-lower', rules.lower);
+    atualizarRegraModal('m-rule-num', rules.num);
+    atualizarRegraModal('m-rule-special', rules.special);
+
+    resetSenhaValida = rules.len && rules.upper && rules.lower && rules.num && rules.special;
+}
+
+function atualizarRegraModal(elementId, met) {
+    const element = document.getElementById(elementId);
+    const icon = element.querySelector('i');
+    if (met) {
+        element.style.color = '#16a34a';
+        icon.className = 'bi bi-check-circle-fill';
+    } else {
+        element.style.color = '#94a3b8';
+        icon.className = 'bi bi-circle';
+    }
+}
+
+function validarSenhaReset(e) {
+    const senha = document.getElementById('modal_nova_senha').value;
+    const confirmar = document.getElementById('modal_confirmar_senha').value;
+
+    if (!resetSenhaValida) {
+        alert('A senha informada não atende aos requisitos de segurança.');
+        return false;
+    }
+
+    if (senha !== confirmar) {
+        alert('As senhas informadas não correspondem.');
+        return false;
+    }
+
+    return true;
+}
+</script>
+</body>
+</html>
