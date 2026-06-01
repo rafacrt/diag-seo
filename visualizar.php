@@ -19,6 +19,20 @@ if (!$r) {
 $problemas = json_decode($r['problemas'] ?? '[]', true) ?: [];
 $acoes     = json_decode($r['acoes']     ?? '[]', true) ?: [];
 
+$tipo_relatorio = $_GET['formato'] ?? $r['tipo_relatorio'] ?? 'completo';
+if (!in_array($tipo_relatorio, ['completo', 'compacto'])) {
+    $tipo_relatorio = 'completo';
+}
+
+$plano_get = $_GET['plano'] ?? null;
+if ($plano_get === 'oculto') {
+    $bloquear_plano = 1;
+} elseif ($plano_get === 'liberado') {
+    $bloquear_plano = 0;
+} else {
+    $bloquear_plano = (int)($r['bloquear_plano'] ?? 0);
+}
+
 // Cor primária do tema do relatório
 $primaryColor = !empty($r['pdf_cor_tema']) ? $r['pdf_cor_tema'] : '#3b82f6';
 ?>
@@ -262,10 +276,13 @@ $primaryColor = !empty($r['pdf_cor_tema']) ? $r['pdf_cor_tema'] : '#3b82f6';
         <?php endif; ?>
       </div>
       <div class="d-flex align-items-center gap-2">
+        <span class="badge bg-primary-subtle text-primary border border-primary-subtle px-3 py-2 fw-semibold d-none d-md-inline-block" style="border-radius: 30px; font-size: 0.75rem;">
+          FORMATO: <strong><?= strtoupper($tipo_relatorio) ?></strong>
+        </span>
         <span class="badge bg-secondary-subtle text-white border border-secondary-subtle px-3 py-2 fw-semibold d-none d-md-inline-block" style="border-radius: 30px; font-size: 0.75rem;">
           AVALIAÇÃO GERAL: <strong class="text-<?= strtolower($r['resultado_geral']) === 'bom' ? 'success' : (strtolower($r['resultado_geral']) === 'médio' ? 'warning' : 'danger') ?>"><?= $r['resultado_geral'] ?></strong>
         </span>
-        <a href="pdf.php?id=<?= $id ?>" target="_blank" class="btn btn-primary d-inline-flex align-items-center gap-2 fw-bold" style="border-radius: 30px; padding: 8px 20px; font-size: 0.85rem;">
+        <a href="pdf.php?id=<?= $id ?>&formato=<?= $tipo_relatorio ?>&plano=<?= $bloquear_plano === 1 ? 'oculto' : 'liberado' ?>" target="_blank" class="btn btn-primary d-inline-flex align-items-center gap-2 fw-bold" style="border-radius: 30px; padding: 8px 20px; font-size: 0.85rem;">
           <i class="bi bi-file-earmark-pdf-fill"></i> Baixar PDF
         </a>
       </div>
@@ -365,6 +382,392 @@ $primaryColor = !empty($r['pdf_cor_tema']) ? $r['pdf_cor_tema'] : '#3b82f6';
       <?php endif; ?>
     </div>
 
+    <!-- ─── DIAGNÓSTICO DE INFRAESTRUTURA & SEGURANÇA ─── -->
+    <div class="mb-5">
+      <h3 class="mb-4 d-flex align-items-center gap-2">
+        <i class="bi bi-shield-check text-primary"></i> Diagnóstico de Infraestrutura & Segurança
+      </h3>
+      <div class="row g-4">
+        <!-- Plataforma CMS -->
+        <div class="col-12 col-md-6 col-lg-3">
+          <div class="glass-panel py-4 px-3 text-center h-100 d-flex flex-column justify-content-between align-items-center" style="margin-bottom:0;">
+            <div>
+              <div class="d-flex align-items-center justify-content-center gap-2 mb-2 text-primary">
+                <i class="bi bi-cpu-fill fs-4"></i>
+                <h6 class="fw-bold mb-0">Plataforma / CMS</h6>
+              </div>
+              <p class="text-white-50 small mb-4" style="line-height: 1.4; font-size: 0.78rem;">CMS e tecnologias de desenvolvimento web ativas no endereço principal.</p>
+            </div>
+            <span class="badge py-2 px-4 rounded-3 border fw-bold" style="font-size: 0.85rem; <?= (!empty($r['auditoria_cms']) && $r['auditoria_cms'] !== 'Não Identificado') ? 'background-color: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.2); color: #10b981;' : 'background-color: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.2); color: #f59e0b;' ?>">
+              <?= !empty($r['auditoria_cms']) ? htmlspecialchars($r['auditoria_cms']) : 'Não Identificado' ?>
+            </span>
+          </div>
+        </div>
+
+        <!-- Hospedagem & IP -->
+        <?php
+        $geo = !empty($r['auditoria_hospedagem']) ? json_decode($r['auditoria_hospedagem'], true) : null;
+        ?>
+        <div class="col-12 col-md-6 col-lg-3">
+          <div class="glass-panel py-4 px-3 h-100 d-flex flex-column justify-content-between" style="margin-bottom:0;">
+            <div>
+              <div class="d-flex align-items-center gap-2 mb-2 text-primary">
+                <i class="bi bi-server fs-4"></i>
+                <h6 class="fw-bold mb-0">Hospedagem & IP</h6>
+              </div>
+              <p class="text-white-50 small mb-3" style="line-height: 1.4; font-size: 0.78rem;">Provedor físico e localização do servidor onde a página está hospedada.</p>
+            </div>
+            <div class="text-start small" style="line-height: 1.5; color: #cbd5e1; font-size: 0.76rem;">
+              <?php if ($geo): ?>
+                Provedor: <strong class="text-white"><?= htmlspecialchars($geo['provedor']) ?></strong><br>
+                Local: <strong class="text-white"><?= htmlspecialchars($geo['cidade']) ?>, <?= htmlspecialchars($geo['pais']) ?></strong><br>
+                Endereço IP: <span class="font-monospace opacity-75" style="font-size:0.75rem;"><?= htmlspecialchars($geo['ip']) ?></span>
+              <?php else: ?>
+                <span class="text-white-50 italic">Auditoria pendente ou indisponível</span>
+              <?php endif; ?>
+            </div>
+          </div>
+        </div>
+
+        <!-- Segurança HTTP & SSL -->
+        <?php
+        $seg = !empty($r['auditoria_seguranca']) ? json_decode($r['auditoria_seguranca'], true) : null;
+        $segAtivos = 0;
+        if ($seg) {
+            foreach (['hsts', 'csp', 'x_frame', 'x_content', 'referrer'] as $c) {
+                if (!empty($seg[$c])) $segAtivos++;
+            }
+        }
+        ?>
+        <div class="col-12 col-md-6 col-lg-3">
+          <div class="glass-panel py-4 px-3 h-100 d-flex flex-column justify-content-between" style="margin-bottom:0;">
+            <div>
+              <div class="d-flex align-items-center gap-2 mb-2 text-primary">
+                <i class="bi bi-lock-fill fs-4"></i>
+                <h6 class="fw-bold mb-0">Segurança & SSL</h6>
+              </div>
+              <p class="text-white-50 small mb-3" style="line-height: 1.4; font-size: 0.78rem;">Nível de proteção HTTP e status de criptografia de dados (SSL).</p>
+            </div>
+            <div class="text-start small" style="line-height: 1.5; color: #cbd5e1; font-size: 0.76rem;">
+              <?php if ($seg): ?>
+                SSL: <strong class="<?= $seg['ssl_ativo'] ? 'text-success' : 'text-danger' ?>"><?= $seg['ssl_ativo'] ? '✓ Ativo' : '✗ Sem SSL' ?></strong><br>
+                Headers Proteção: <strong class="text-white"><?= $segAtivos ?>/5 ativos</strong>
+              <?php else: ?>
+                <span class="text-white-50 italic">Auditoria de segurança pendente</span>
+              <?php endif; ?>
+            </div>
+          </div>
+        </div>
+
+        <!-- DNS de E-mail -->
+        <?php
+        $dns = !empty($r['auditoria_dns']) ? json_decode($r['auditoria_dns'], true) : null;
+        ?>
+        <div class="col-12 col-md-6 col-lg-3">
+          <div class="glass-panel py-4 px-3 h-100 d-flex flex-column justify-content-between" style="margin-bottom:0;">
+            <div>
+              <div class="d-flex align-items-center gap-2 mb-2 text-primary">
+                <i class="bi bi-envelope-check-fill fs-4"></i>
+                <h6 class="fw-bold mb-0">DNS de E-mail (SPAM)</h6>
+              </div>
+              <p class="text-white-50 small mb-3" style="line-height: 1.4; font-size: 0.78rem;">Status de chaves que protegem e-mails do domínio contra fraudes e SPAM.</p>
+            </div>
+            <div class="text-start small" style="line-height: 1.5; color: #cbd5e1; font-size: 0.76rem;">
+              <?php if ($dns): ?>
+                Chave SPF: <strong class="<?= $dns['spf_valido'] ? 'text-success' : 'text-danger' ?>"><?= $dns['spf_valido'] ? '✓ Configurada' : '✗ Ausente' ?></strong><br>
+                Chave DMARC: <strong class="<?= $dns['dmarc_valido'] ? 'text-success' : 'text-danger' ?>"><?= $dns['dmarc_valido'] ? '✓ Configurada' : '✗ Ausente' ?></strong>
+              <?php else: ?>
+                <span class="text-white-50 italic">Auditoria de DNS pendente</span>
+              <?php endif; ?>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── SIMULAÇÃO DE MÍDIA PAGA (GOOGLE ADS) ─── -->
+    <?php
+    $inv = (float)($r['ads_investimento'] ?? 0);
+    $cpc = (float)($r['ads_cpc'] ?? 0);
+    if ($inv > 0 && $cpc > 0):
+        $P = (int)($r['ps_performance_mobile'] ?? 35);
+        if ($P >= 90) {
+            $D = 3;
+        } else if ($P >= 50) {
+            $D = 30 - 0.3 * $P;
+        } else {
+            $D = 65 - 0.7 * $P;
+        }
+        $D = max(0, min(100, $D));
+        $prejuizo = $inv * ($D / 100);
+        $cliquesPerdidos = $cpc > 0 ? round($prejuizo / $cpc) : 0;
+        $aproveitado = $inv - $prejuizo;
+        $nicho_nome = match($r['ads_nicho'] ?? '') {
+            'advocacia' => 'Advocacia / Jurídico',
+            'saude' => 'Saúde / Clínicas / Dentistas',
+            'estetica' => 'Estética / Beleza',
+            'ecommerce' => 'E-commerce / Varejo',
+            'educacao' => 'Educação / Cursos',
+            'tecnologia' => 'SaaS / Tecnologia / B2B',
+            'imobiliario' => 'Imobiliário / Corretores',
+            'financas' => 'Finanças / Investimentos',
+            'contabilidade' => 'Contabilidade / Assessoria',
+            'turismo' => 'Turismo / Hotelaria',
+            'automotivo' => 'Automotivo / Concessionárias',
+            'gastronomia' => 'Gastronomia / Restaurantes',
+            'servicos_locais' => 'Serviços Locais (Urgência)',
+            default => 'Serviços Gerais / Outro'
+        };
+    ?>
+    <div class="mb-5">
+      <h3 class="mb-4 d-flex align-items-center gap-2">
+        <i class="bi bi-google text-primary"></i> Impacto de Performance em Mídia Paga (Google Ads)
+      </h3>
+      <div class="glass-panel py-4 px-4">
+        <div class="row g-4 align-items-center">
+          <div class="col-12 col-lg-7">
+            <div class="d-flex align-items-start gap-3">
+              <span class="badge rounded-circle p-2 bg-danger-subtle text-danger fs-4 d-inline-flex" style="margin-top:2px;"><i class="bi bi-exclamation-octagon-fill"></i></span>
+              <div>
+                <h4 class="text-white fw-bold mb-2">Simulador de Desperdício Mensal</h4>
+                <p class="text-white-50 small mb-3" style="line-height: 1.5; font-size: 0.8rem;">
+                  Com base no desempenho mobile de <strong><?= $P ?>/100</strong>, o site apresenta lentidão no carregamento móvel em conexões móveis 3G/4G. Estima-se que <strong><?= round($D) ?>%</strong> dos visitantes vindos de anúncios móveis clicam, gastam orçamento e desistem da navegação antes do site abrir.
+                </p>
+                <div class="small text-white-50" style="font-size:0.75rem;">
+                  Nicho de Atuação: <strong class="text-white"><?= htmlspecialchars($nicho_nome) ?></strong> &bull; CPC Estimado: <strong class="text-white">R$ <?= number_format($cpc, 2, ',', '.') ?></strong>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-lg-5">
+            <div class="p-3 rounded-4 border border-danger-subtle text-center text-lg-start" style="background-color: rgba(220, 38, 38, 0.08); border-color: rgba(220, 53, 69, 0.25) !important;">
+              <div class="row g-3">
+                <div class="col-6 text-center">
+                  <span class="text-white-50 small d-block mb-1" style="font-size:0.75rem;">Perda Mensal Est.</span>
+                  <strong class="text-danger fs-4 fw-bold">R$ <?= number_format($prejuizo, 2, ',', '.') ?></strong>
+                </div>
+                <div class="col-6 text-center border-start border-danger-subtle" style="border-color: rgba(220, 53, 69, 0.2) !important;">
+                  <span class="text-white-50 small d-block mb-1" style="font-size:0.75rem;">Cliques Desperdiçados</span>
+                  <strong class="text-danger fs-4 fw-bold"><?= number_format($cliquesPerdidos) ?> /mês</strong>
+                </div>
+                <div class="col-12 text-center border-top border-danger-subtle pt-2 mt-2" style="border-color: rgba(220, 53, 69, 0.2) !important;">
+                  <span class="text-white-50 small d-inline-block me-1" style="font-size:0.75rem;">Verba Aproveitada Efetivamente:</span>
+                  <strong class="text-success fs-5">R$ <?= number_format($aproveitado, 2, ',', '.') ?></strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- ─── CONFORMIDADE E SEGURANÇA DO DOMÍNIO ─── -->
+    <?php
+    $adExp = trim($r['ad_experience_status'] ?? '');
+    $sb = trim($r['safe_browsing_status'] ?? '');
+    $ap = trim($r['ads_policy_status'] ?? '');
+
+    $has_security_warning = false;
+    $security_alerts = [];
+
+    // Ad Experience
+    $adExpClass = 'text-white-50';
+    $adExpText = $adExp ?: 'Não verificado';
+    $adExpIcon = '<i class="bi bi-dash-circle text-muted"></i>';
+    if ($adExp) {
+        if (str_contains(strtolower($adExp), 'passing')) {
+            $adExpClass = 'text-success';
+            $adExpIcon = '<i class="bi bi-check-circle-fill text-success"></i>';
+        } else if (str_contains(strtolower($adExp), 'warning')) {
+            $adExpClass = 'text-warning fw-bold';
+            $adExpIcon = '<i class="bi bi-exclamation-triangle-fill text-warning"></i>';
+            $has_security_warning = true;
+            $security_alerts[] = [
+                'titulo' => 'Ad Experience Report: Status de Atenção (Warning)',
+                'desc' => 'O Google identificou desvios de layout ou anúncios abusivos na página de destino. Risco severo de suspensão técnica das campanhas de mídia paga.',
+                'nivel' => 'warning'
+            ];
+        } else if (str_contains(strtolower($adExp), 'failing')) {
+            $adExpClass = 'text-danger fw-bold';
+            $adExpIcon = '<i class="bi bi-x-circle-fill text-danger"></i>';
+            $has_security_warning = true;
+            $security_alerts[] = [
+                'titulo' => 'Ad Experience Report: Reprovado (Failing)',
+                'desc' => 'REPROVADO PELO GOOGLE. O domínio foi classificado como em desconformidade grave. Anúncios vinculados a esta URL são bloqueados ou reprovados preventivamente.',
+                'nivel' => 'danger'
+            ];
+        } else {
+            $adExpClass = 'text-white';
+            $adExpIcon = '<i class="bi bi-info-circle text-info"></i>';
+        }
+    }
+
+    // Safe Browsing
+    $sbClass = 'text-white-50';
+    $sbText = $sb ?: 'Não verificado';
+    $sbIcon = '<i class="bi bi-dash-circle text-muted"></i>';
+    if ($sb) {
+        if (str_contains(strtolower($sb), 'nenhuma')) {
+            $sbClass = 'text-success';
+            $sbIcon = '<i class="bi bi-shield-fill-check text-success"></i>';
+        } else if (str_contains(strtolower($sb), 'parcialmente')) {
+            $sbClass = 'text-warning fw-bold';
+            $sbIcon = '<i class="bi bi-shield-fill-exclamation text-warning"></i>';
+            $has_security_warning = true;
+            $security_alerts[] = [
+                'titulo' => 'Google Safe Browsing: Domínio Parcialmente Perigoso',
+                'desc' => 'Foram detectados scripts maliciosos ou tentativas de engenharia social parciais. Pode gerar restrição de acessos e bloqueio silencioso do tráfego.',
+                'nivel' => 'warning'
+            ];
+        } else if (str_contains(strtolower($sb), 'lista negra') || str_contains(strtolower($sb), 'perigoso')) {
+            $sbClass = 'text-danger fw-bold';
+            $sbIcon = '<i class="bi bi-shield-fill-x text-danger"></i>';
+            $has_security_warning = true;
+            $security_alerts[] = [
+                'titulo' => 'Google Safe Browsing: Domínio em LISTA NEGRA (Perigoso)',
+                'desc' => 'BLOQUEIO DE SEGURANÇA ATIVO. O site foi incluído na lista negra de malwares/phishing. Navegadores exibem a temida tela vermelha de perigo e contas de anúncios vinculadas são suspensas de forma imediata e permanente.',
+                'nivel' => 'danger'
+            ];
+        }
+    }
+
+    // Ads Policy
+    $apClass = 'text-white-50';
+    $apText = $ap ?: 'Não verificado';
+    $apIcon = '<i class="bi bi-dash-circle text-muted"></i>';
+    if ($ap) {
+        if (str_contains(strtolower($ap), 'sem restr')) {
+            $apClass = 'text-success';
+            $apIcon = '<i class="bi bi-check-circle-fill text-success"></i>';
+        } else if (str_contains(strtolower($ap), 'restrição')) {
+            $apClass = 'text-warning fw-bold';
+            $apIcon = '<i class="bi bi-exclamation-circle-fill text-warning"></i>';
+            $has_security_warning = true;
+            $security_alerts[] = [
+                'titulo' => 'Centro de Políticas Google Ads: Anúncios com Restrição',
+                'desc' => 'Seus anúncios sofrem limitações de alcance por violações de políticas de destino. O tráfego pago fica mais escasso e o CPC encarece substancialmente.',
+                'nivel' => 'warning'
+            ];
+        } else if (str_contains(strtolower($ap), 'reprovado')) {
+            $apClass = 'text-danger fw-bold';
+            $apIcon = '<i class="bi bi-x-circle-fill text-danger"></i>';
+            $has_security_warning = true;
+            $security_alerts[] = [
+                'titulo' => 'Centro de Políticas Google Ads: Anúncios Reprovados',
+                'desc' => 'O Google Ads reprovou e pausou anúncios devido a problemas diretos na página de destino. O fluxo comercial das campanhas foi suspenso.',
+                'nivel' => 'danger'
+            ];
+        } else if (str_contains(strtolower($ap), 'suspensa')) {
+            $apClass = 'text-danger fw-bold';
+            $apIcon = '<i class="bi bi-exclamation-octagon-fill text-danger"></i>';
+            $has_security_warning = true;
+            $security_alerts[] = [
+                'titulo' => 'Centro de Políticas Google Ads: CONTA SUSPENSA',
+                'desc' => 'BLOQUEIO TOTAL E GRAVE. A conta de anúncios do cliente está suspensa por violação sistemática. Todo o investimento está paralisado e as conversões congeladas.',
+                'nivel' => 'danger'
+            ];
+        }
+    }
+    ?>
+    <div class="mb-5">
+      <h3 class="mb-4 d-flex align-items-center gap-2">
+        <i class="bi bi-shield-lock-fill text-primary"></i> Segurança do Domínio & Conformidade de Anúncios
+      </h3>
+      <div class="row g-4 mb-4">
+        
+        <!-- Ad Experience -->
+        <div class="col-12 col-md-4">
+          <div class="cwv-card h-100">
+            <div class="d-flex justify-content-between align-items-start mb-3">
+              <div>
+                <h5 class="mb-0 text-white" style="font-size: 0.95rem;">Ad Experience Report</h5>
+                <small class="text-white-50" style="font-size: 0.72rem;">Search Console / Better Ads</small>
+              </div>
+              <span class="fs-4"><?= $adExpIcon ?></span>
+            </div>
+            <p class="text-white-50 mb-0" style="font-size: 0.76rem; line-height: 1.4;">Avalia se o site exibe formatos de anúncios abusivos ou intrusivos que degradam a experiência do usuário móvel.</p>
+            <div class="border-top pt-2 mt-3 text-end">
+              <small class="text-white-50 d-block" style="font-size: 0.7rem;">Resultado Técnico</small>
+              <strong class="<?= $adExpClass ?>" style="font-size: 0.85rem;"><?= htmlspecialchars($adExpText) ?></strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Safe Browsing -->
+        <div class="col-12 col-md-4">
+          <div class="cwv-card h-100">
+            <div class="d-flex justify-content-between align-items-start mb-3">
+              <div>
+                <h5 class="mb-0 text-white" style="font-size: 0.95rem;">Google Safe Browsing</h5>
+                <small class="text-white-50" style="font-size: 0.72rem;">Transparency Security Report</small>
+              </div>
+              <span class="fs-4"><?= $sbIcon ?></span>
+            </div>
+            <p class="text-white-50 mb-0" style="font-size: 0.76rem; line-height: 1.4;">Varre o site buscando malwares, vírus, scripts invasivos e ameaças ativas de roubo de dados (phishing).</p>
+            <div class="border-top pt-2 mt-3 text-end">
+              <small class="text-white-50 d-block" style="font-size: 0.7rem;">Status do Domínio</small>
+              <strong class="<?= $sbClass ?>" style="font-size: 0.85rem;"><?= htmlspecialchars($sbText) ?></strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Ads Policy -->
+        <div class="col-12 col-md-4">
+          <div class="cwv-card h-100">
+            <div class="d-flex justify-content-between align-items-start mb-3">
+              <div>
+                <h5 class="mb-0 text-white" style="font-size: 0.95rem;">Centro de Políticas</h5>
+                <small class="text-white-50" style="font-size: 0.72rem;">Google Ads Policy Center</small>
+              </div>
+              <span class="fs-4"><?= $apIcon ?></span>
+            </div>
+            <p class="text-white-50 mb-0" style="font-size: 0.76rem; line-height: 1.4;">Identifica restrições legais, suspensões ou reprovações de anúncios ligadas diretamente à página de destino.</p>
+            <div class="border-top pt-2 mt-3 text-end">
+              <small class="text-white-50 d-block" style="font-size: 0.7rem;">Status no Google Ads</small>
+              <strong class="<?= $apClass ?>" style="font-size: 0.85rem;"><?= htmlspecialchars($apText) ?></strong>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <?php if ($has_security_warning): ?>
+        <!-- BANNER DE ALERTA LUXUOSO DE GRAVIDADE (GATILHO COMERCIAL DE VENDA) -->
+        <div class="p-4 rounded-4 border mb-4" style="background: linear-gradient(135deg, rgba(220, 38, 38, 0.15) 0%, rgba(239, 68, 68, 0.05) 100%); border-color: rgba(220, 53, 69, 0.3) !important;">
+          <div class="d-flex align-items-start gap-3">
+            <span class="badge rounded-circle p-2 bg-danger text-white fs-4 d-inline-flex" style="box-shadow: 0 0 15px rgba(220, 38, 38, 0.4);"><i class="bi bi-shield-fill-x"></i></span>
+            <div class="w-100">
+              <h4 class="text-white fw-bold mb-2" style="font-size:1.15rem;">ALERTA CRÍTICO: Vulnerabilidade e Risco Comercial no Ar</h4>
+              <p class="text-white-50 small mb-3" style="line-height: 1.6; font-size: 0.82rem;">
+                Foram identificados problemas graves de segurança e conformidade de anúncios que colocam o faturamento da empresa em risco extremo. Inconformidades no Google Ads ou Safe Browsing podem resultar no congelamento total das campanhas pagas, bloqueio do domínio por navegadores e destruição imediata da reputação digital do negócio.
+              </p>
+              
+              <div class="row g-3 mt-1">
+                <?php foreach ($security_alerts as $alert): ?>
+                  <div class="col-12">
+                    <div class="p-3 rounded-3" style="background: rgba(11, 15, 25, 0.4); border-left: 4px solid <?= $alert['nivel'] === 'danger' ? '#ef4444' : '#f59e0b' ?>;">
+                      <strong class="d-block text-white" style="font-size: 0.85rem;"><i class="bi bi-exclamation-triangle-fill me-1 text-<?= $alert['nivel'] === 'danger' ? 'danger' : 'warning' ?>"></i> <?= htmlspecialchars($alert['titulo']) ?></strong>
+                      <span class="text-white-50 d-block mt-1 small" style="line-height: 1.4; font-size: 0.78rem;"><?= htmlspecialchars($alert['desc']) ?></span>
+                    </div>
+                  </div>
+                <?php endforeach; ?>
+              </div>
+
+              <div class="mt-4 d-flex flex-wrap align-items-center justify-content-between gap-3 border-top pt-3" style="border-color: rgba(255,255,255,0.06) !important;">
+                <span class="text-white-50 small" style="font-size: 0.78rem;"><i class="bi bi-info-circle me-1"></i> A correção técnica destas falhas deve ser executada de forma imediata e profissional.</span>
+                <a href="mailto:contato@rajo.com.br?subject=Suporte%20Urgente%20-%20Corre%C3%A7%C3%A3o%20de%20Pol%C3%ADticas%20e%20Seguran%C3%A7a%20-%20<?= urlencode($r['cliente']) ?>" class="btn btn-danger btn-sm fw-bold px-4 py-2" style="border-radius: 20px; font-size: 0.8rem; box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);">
+                  <i class="bi bi-patch-check-fill me-1"></i> Contratar Correção Urgente de Segurança
+                </a>
+              </div>
+            </div>
+          </div>
+        </div>
+      <?php endif; ?>
+
+    </div>
+
     <!-- ─── CORE WEB VITALS ─── -->
     <div class="mb-5">
       <h3 class="mb-4 d-flex align-items-center gap-2">
@@ -427,7 +830,12 @@ $primaryColor = !empty($r['pdf_cor_tema']) ? $r['pdf_cor_tema'] : '#3b82f6';
             <div class="alert alert-secondary bg-transparent border-dashed text-white-50">Nenhum problema registrado para este site.</div>
           <?php else: ?>
             <div class="accordion" id="accordionProblemas">
-              <?php foreach ($problemas as $idx => $p): 
+              <?php 
+              $probs_exibidos = $problemas;
+              if ($tipo_relatorio === 'compacto') {
+                  $probs_exibidos = array_slice($problemas, 0, 4);
+              }
+              foreach ($probs_exibidos as $idx => $p): 
                 $corPri = match(strtolower($p['prioridade'] ?? '')) {
                   'baixa' => 'success',
                   'média' => 'warning',
@@ -470,7 +878,7 @@ $primaryColor = !empty($r['pdf_cor_tema']) ? $r['pdf_cor_tema'] : '#3b82f6';
           <?php if (empty($acoes)): ?>
             <div class="alert alert-secondary bg-transparent border-dashed text-white-50">Nenhuma ação programada para este site.</div>
           <?php else: ?>
-            <div class="table-responsive" <?= ($r['bloquear_plano'] ?? 0) == 1 ? 'style="filter: blur(5px); opacity: 0.25; pointer-events: none; user-select: none;"' : '' ?>>
+            <div class="table-responsive" <?= $bloquear_plano == 1 ? 'style="filter: blur(5px); opacity: 0.25; pointer-events: none; user-select: none;"' : '' ?>>
               <table class="table table-dark-custom align-middle">
                 <thead>
                   <tr>
@@ -480,7 +888,13 @@ $primaryColor = !empty($r['pdf_cor_tema']) ? $r['pdf_cor_tema'] : '#3b82f6';
                   </tr>
                 </thead>
                 <tbody>
-                  <?php foreach ($acoes as $a): ?>
+                  <?php 
+                  $acoes_exibidas = $acoes;
+                  if ($tipo_relatorio === 'compacto') {
+                      $acoes_exibidas = array_slice($acoes, 0, 3);
+                  }
+                  foreach ($acoes_exibidas as $a): 
+                  ?>
                     <tr>
                       <td class="fw-semibold text-white"><?= htmlspecialchars($a['acao']) ?></td>
                       <td><span class="text-white-50"><?= htmlspecialchars($a['responsavel'] ?? 'Desenvolvedor') ?></span></td>
@@ -491,7 +905,7 @@ $primaryColor = !empty($r['pdf_cor_tema']) ? $r['pdf_cor_tema'] : '#3b82f6';
               </table>
             </div>
 
-            <?php if (($r['bloquear_plano'] ?? 0) == 1): ?>
+            <?php if ($bloquear_plano == 1): ?>
               <!-- Locked Commercial Overlay -->
               <div class="position-absolute top-50 start-50 translate-middle w-100 h-100 d-flex flex-column align-items-center justify-content-center text-center px-4" 
                    style="background: rgba(11, 15, 25, 0.45); backdrop-filter: blur(2px); z-index: 10;">
@@ -520,12 +934,39 @@ $primaryColor = !empty($r['pdf_cor_tema']) ? $r['pdf_cor_tema'] : '#3b82f6';
           <i class="bi bi-chat-left-quote text-primary"></i> Conclusão Técnica e Comercial
         </h4>
         <div style="font-size: 1.05rem; line-height: 1.8; color: #cbd5e1;">
-          <?php foreach (explode("\n\n", $r['conclusao']) as $para): ?>
+          <?php 
+          $conclusao_texto = $r['conclusao'];
+          if ($tipo_relatorio === 'compacto' && !empty($conclusao_texto)) {
+              $paragrafos = explode("\n\n", $conclusao_texto);
+              $conclusao_texto = trim($paragrafos[0] ?? '');
+              if (isset($paragrafos[1]) && strlen($conclusao_texto) < 300) {
+                  $conclusao_texto .= "\n\n" . trim($paragrafos[1]);
+              }
+          }
+          foreach (explode("\n\n", $conclusao_texto) as $para): 
+          ?>
             <p><?= nl2br(htmlspecialchars(trim($para))) ?></p>
           <?php endforeach; ?>
         </div>
       </div>
     <?php endif; ?>
+
+    <!-- ─── CARD DE CONVERSÃO COMERCIAL LUXUOSO ─── -->
+    <div class="glass-panel text-center py-5 px-4 mb-5 border border-primary border-opacity-25" style="background: radial-gradient(circle at center, rgba(var(--primary-color-rgb), 0.12) 0%, rgba(11, 15, 25, 0) 80%); border-radius: 24px;">
+      <i class="bi bi-rocket-takeoff text-primary fs-1 mb-3 d-inline-block" style="filter: drop-shadow(0 0 15px rgba(var(--primary-color-rgb), 0.5));"></i>
+      <h3 class="text-white fw-bold mb-2">Pronto para Otimizar Seus Resultados Comerciais?</h3>
+      <p class="text-white-50 mx-auto mb-4" style="max-width: 600px; font-size: 0.88rem; line-height: 1.6;">
+        Não permita que a lentidão, as inconformidades técnicas e os riscos de segurança destruam a lucratividade das suas campanhas de marketing. A equipe de engenharia e otimização avançada da <strong>Rajo Desenvolvimento</strong> está de prontidão para implementar todas as ações corretivas identificadas neste diagnóstico.
+      </p>
+      <div class="d-flex justify-content-center gap-3 flex-wrap">
+        <a href="mailto:contato@rajo.com.br?subject=Agendar%20Reuni%C3%A3o%20de%20Otimiza%C3%A7%C3%A3o%20-%20<?= urlencode($r['cliente']) ?>" class="btn btn-primary fw-bold px-4 py-2.5 d-flex align-items-center gap-2" style="border-radius: 30px; font-size: 0.85rem; box-shadow: 0 4px 15px rgba(var(--primary-color-rgb), 0.4);">
+          <i class="bi bi-calendar-event-fill"></i> Agendar Reunião de Alinhamento
+        </a>
+        <a href="https://wa.me/5511999999999?text=Olá,%20gostaria%20de%20saber%20mais%20sobre%20a%20correção%20dos%20problemas%20técnicos%20do%20meu%20site%20relacionados%20ao%20diagnóstico%20do%20cliente%20<?= urlencode($r['cliente']) ?>" target="_blank" class="btn btn-outline-light fw-bold px-4 py-2.5 d-flex align-items-center gap-2" style="border-radius: 30px; font-size: 0.85rem;">
+          <i class="bi bi-whatsapp"></i> Falar com um Especialista
+        </a>
+      </div>
+    </div>
 
     <!-- ─── FOOTER ─── -->
     <footer class="text-center py-4 border-top" style="border-color: var(--border-color) !important;">

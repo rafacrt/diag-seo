@@ -5,9 +5,11 @@
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/auth.php';
 
-$token = trim($_GET['token'] ?? '');
+$token = trim($_REQUEST['token'] ?? '');
 $erro = '';
 $sucesso = '';
+$mostrar_confirmacao = false;
+$user = null;
 
 if ($token === '') {
     $erro = 'Parâmetro de ativação inválido ou ausente.';
@@ -30,10 +32,16 @@ if ($token === '') {
                 // Opcional: remover registro expirado não confirmado para permitir novo cadastro
                 db()->prepare("DELETE FROM usuarios WHERE id = ? AND confirmado = 0")->execute([$user['id']]);
             } else {
-                // Confirmar conta
-                $upd = db()->prepare("UPDATE usuarios SET confirmado = 1, token_confirmacao = NULL, token_expira = NULL WHERE id = ?");
-                $upd->execute([$user['id']]);
-                $sucesso = 'Sua conta de analista foi ativada com sucesso! Você já pode entrar no sistema.';
+                // Se for requisição POST, realiza a ativação
+                if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                    // Confirmar conta
+                    $upd = db()->prepare("UPDATE usuarios SET confirmado = 1, token_confirmacao = NULL, token_expira = NULL WHERE id = ?");
+                    $upd->execute([$user['id']]);
+                    $sucesso = 'Sua conta de analista foi ativada com sucesso! Você já pode entrar no sistema.';
+                } else {
+                    // Se for GET, exibe a tela intermediária
+                    $mostrar_confirmacao = true;
+                }
             }
         }
     } catch (Throwable $e) {
@@ -111,6 +119,12 @@ if ($token === '') {
             box-shadow: 0 10px 20px -5px rgba(220, 38, 38, 0.2);
         }
 
+        .icon-warning {
+            background-color: #fffbeb;
+            color: #d97706;
+            box-shadow: 0 10px 20px -5px rgba(217, 119, 6, 0.2);
+        }
+
         .status-title {
             font-family: var(--font-title);
             font-weight: 800;
@@ -129,7 +143,7 @@ if ($token === '') {
         .btn-action {
             background: var(--primary-gradient);
             border: none;
-            color: white;
+            color: #ffffff !important;
             font-weight: 600;
             padding: 12px 30px;
             border-radius: 12px;
@@ -142,11 +156,13 @@ if ($token === '') {
             gap: 8px;
         }
 
-        .btn-action:hover {
+        .btn-action:hover,
+        .btn-action:focus,
+        .btn-action:active {
             transform: translateY(-2px);
             box-shadow: 0 12px 20px -4px rgba(37, 99, 235, 0.4);
             filter: brightness(1.05);
-            color: white;
+            color: #ffffff !important;
         }
 
         .btn-secondary-action {
@@ -184,6 +200,20 @@ if ($token === '') {
             <a href="login.php" class="btn btn-action">
                 Ir para o Login <i class="bi bi-arrow-right"></i>
             </a>
+        <?php elseif ($mostrar_confirmacao): ?>
+            <div class="icon-circle icon-warning">
+                <i class="bi bi-shield-lock-fill"></i>
+            </div>
+            <h4 class="status-title">Confirme sua Ativação</h4>
+            <p class="status-text text-start px-2">
+                Olá, <strong><?= htmlspecialchars($user['nome'] ?? 'analista') ?></strong>. Para concluir a ativação de sua conta de analista no <?= htmlspecialchars(APP_NAME) ?>, por favor clique no botão abaixo.
+            </p>
+            <form method="POST" action="confirmar.php?token=<?= urlencode($token) ?>" class="px-2">
+                <input type="hidden" name="token" value="<?= htmlspecialchars($token) ?>">
+                <button type="submit" class="btn btn-action w-100 py-3">
+                    Confirmar Ativação de Conta <i class="bi bi-check-circle-fill"></i>
+                </button>
+            </form>
         <?php else: ?>
             <div class="icon-circle icon-danger">
                 <i class="bi bi-shield-exclamation"></i>

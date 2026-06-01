@@ -24,6 +24,7 @@ $scheme = $parsedUrl['scheme'] ?? 'https';
 $baseUrl = $scheme . '://' . $host;
 
 // ─── Passo 1: Busca a página inicial para mapear links e pixels ────────
+$responseHeaders = [];
 $ch = curl_init();
 curl_setopt($ch, CURLOPT_URL, $url);
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -33,23 +34,47 @@ curl_setopt($ch, CURLOPT_TIMEOUT, 6);
 curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
 curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
 curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) RajoSEOAuditor/1.2');
+curl_setopt($ch, CURLOPT_HEADERFUNCTION, function($curl, $header) use (&$responseHeaders) {
+    $len = strlen($header);
+    $parts = explode(':', $header, 2);
+    if (count($parts) < 2) return $len;
+    $name = strtolower(trim($parts[0]));
+    $value = trim($parts[1]);
+    $responseHeaders[$name] = $value;
+    return $len;
+});
 
 $homepageHtml = curl_exec($ch);
 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+$effectiveUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+$ip = curl_getinfo($ch, CURLINFO_PRIMARY_IP) ?: gethostbyname($host);
 curl_close($ch);
 
 if ($homepageHtml === false || $httpCode >= 400) {
     // Tenta em HTTP puro antes de desistir
     if (str_contains($url, 'https://')) {
         $urlHttp = str_replace('https://', 'http://', $url);
+        $responseHeaders = [];
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $urlHttp);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 5);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_USERAGENT, 'RajoSEOAuditor/1.2');
+        curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) RajoSEOAuditor/1.2');
+        curl_setopt($ch, CURLOPT_HEADERFUNCTION, function($curl, $header) use (&$responseHeaders) {
+            $len = strlen($header);
+            $parts = explode(':', $header, 2);
+            if (count($parts) < 2) return $len;
+            $name = strtolower(trim($parts[0]));
+            $value = trim($parts[1]);
+            $responseHeaders[$name] = $value;
+            return $len;
+        });
         $homepageHtml = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $effectiveUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+        $ip = curl_getinfo($ch, CURLINFO_PRIMARY_IP) ?: gethostbyname($host);
         curl_close($ch);
     }
 }
@@ -61,6 +86,100 @@ if ($homepageHtml === false) {
     ]);
     exit;
 }
+
+// ─── Auditorias de Infraestrutura, Segurança e DNS ────────────────
+
+// A. Detecção de CMS/Plataforma
+$cms = 'Não Identificado';
+if (str_contains($homepageHtml, 'wp-content') || str_contains($homepageHtml, 'wp-includes')) {
+    $cms = 'WordPress';
+} elseif (str_contains($homepageHtml, 'cdn.shopify.com') || str_contains($homepageHtml, 'Shopify.theme')) {
+    $cms = 'Shopify';
+} elseif (str_contains($homepageHtml, 'wix.com') || str_contains($homepageHtml, 'wixsite') || str_contains($homepageHtml, 'Wix.Press')) {
+    $cms = 'Wix';
+} elseif (str_contains($homepageHtml, 'vtex.com.br') || str_contains($homepageHtml, 'vtex-io')) {
+    $cms = 'VTEX';
+} elseif (str_contains($homepageHtml, 'tray.com.br') || str_contains($homepageHtml, 'tray-cdn')) {
+    $cms = 'Tray';
+} elseif (str_contains($homepageHtml, 'drupal.org') || str_contains($homepageHtml, 'sites/all/themes')) {
+    $cms = 'Drupal';
+} elseif (str_contains($homepageHtml, 'joomla.org') || str_contains($homepageHtml, '/templates/')) {
+    $cms = 'Joomla';
+}
+
+// B. Geolocalização e Provedor (IP-API)
+$geo = [
+    'ip' => $ip,
+    'pais' => 'Não Identificado',
+    'cidade' => 'Não Identificado',
+    'provedor' => 'Não Identificado'
+];
+if (!empty($ip) && $ip !== '127.0.0.1' && !str_starts_with($ip, '192.168.') && !str_starts_with($ip, '10.')) {
+    $geoCh = curl_init("http://ip-api.com/json/" . urlencode($ip) . "?fields=status,country,city,isp,org");
+    curl_setopt($geoCh, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($geoCh, CURLOPT_TIMEOUT, 3);
+    curl_setopt($geoCh, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($geoCh, CURLOPT_USERAGENT, 'Mozilla/5.0 RajoSEOAuditor/1.2');
+    $geoRes = curl_exec($geoCh);
+    curl_close($geoCh);
+    if ($geoRes) {
+        $geoData = json_decode($geoRes, true);
+        if (($geoData['status'] ?? '') === 'success') {
+            $geo['pais'] = $geoData['country'] ?? 'Não Identificado';
+            $geo['cidade'] = $geoData['city'] ?? 'Não Identificado';
+            $geo['provedor'] = $geoData['isp'] ?? $geoData['org'] ?? 'Não Identificado';
+        }
+    }
+}
+
+// C. Cabeçalhos de Segurança HTTP & SSL
+$seguranca = [
+    'ssl_ativo' => str_starts_with(strtolower($effectiveUrl), 'https://'),
+    'hsts' => isset($responseHeaders['strict-transport-security']),
+    'csp' => isset($responseHeaders['content-security-policy']),
+    'x_frame' => isset($responseHeaders['x-frame-options']),
+    'x_content' => isset($responseHeaders['x-content-type-options']),
+    'referrer' => isset($responseHeaders['referrer-policy'])
+];
+
+// D. Registros DNS (SPF e DMARC)
+$spf_valido = false;
+$spf_registro = '';
+$dmarc_valido = false;
+$dmarc_registro = '';
+
+if (!empty($host)) {
+    $records = @dns_get_record($host, DNS_TXT);
+    if (is_array($records)) {
+        foreach ($records as $rec) {
+            $txt = $rec['txt'] ?? $rec['entries'][0] ?? '';
+            if (str_starts_with(strtolower(trim($txt)), 'v=spf1')) {
+                $spf_valido = true;
+                $spf_registro = trim($txt);
+                break;
+            }
+        }
+    }
+    
+    $dmarcRecords = @dns_get_record('_dmarc.' . $host, DNS_TXT);
+    if (is_array($dmarcRecords)) {
+        foreach ($dmarcRecords as $rec) {
+            $txt = $rec['txt'] ?? $rec['entries'][0] ?? '';
+            if (str_starts_with(strtolower(trim($txt)), 'v=dmarc1')) {
+                $dmarc_valido = true;
+                $dmarc_registro = trim($txt);
+                break;
+            }
+        }
+    }
+}
+
+$dns_email = [
+    'spf_valido' => $spf_valido,
+    'spf_registro' => $spf_registro,
+    'dmarc_valido' => $dmarc_valido,
+    'dmarc_registro' => $dmarc_registro
+];
 
 // ─── Passo 2: Detecta pixels globais na Homepage ──────────────────────
 $contemGTM      = str_contains($homepageHtml, 'googletagmanager.com/gtm.js') || preg_match('/GTM-[A-Z0-9]+/i', $homepageHtml);
@@ -274,6 +393,12 @@ echo json_encode([
     'ga4'      => $contemGA4,
     'facebook' => $contemFacebook,
     'tiktok'   => $contemTikTok,
+    
+    // Novas auditorias automatizadas
+    'auditoria_cms'        => $cms,
+    'auditoria_hospedagem' => $geo,
+    'auditoria_seguranca'  => $seguranca,
+    'auditoria_dns'        => $dns_email,
     
     // Estatísticas da Auditoria Profunda
     'audit_summary' => [

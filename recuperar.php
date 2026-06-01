@@ -1,6 +1,6 @@
 <?php
 // ============================================================
-//  Rajo Diagnóstico — Tela de Login (SaaS)
+//  Rajo Diagnóstico — Solicitação de Recuperação de Senha
 // ============================================================
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/auth.php';
@@ -12,70 +12,61 @@ if (esta_logado()) {
 }
 
 $erro = '';
-$sucesso = trim($_GET['sucesso'] ?? '');
+$sucesso = '';
 $email_digitado = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email_digitado = trim($_POST['email'] ?? '');
-    $senha = $_POST['senha'] ?? '';
 
-    if ($email_digitado === '' || $senha === '') {
-        $erro = 'Por favor, insira o seu e-mail e a senha.';
+    if ($email_digitado === '') {
+        $erro = 'Por favor, insira o seu e-mail comercial.';
     } else {
         try {
-            $stmt = db()->prepare("SELECT * FROM usuarios WHERE email = :email LIMIT 1");
+            // Busca o usuário pelo e-mail
+            $stmt = db()->prepare("SELECT id, nome, email FROM usuarios WHERE email = :email LIMIT 1");
             $stmt->execute([':email' => $email_digitado]);
             $user = $stmt->fetch();
 
-            if ($user && password_verify($senha, $user['senha'])) {
-                // Credenciais válidas! Agora verifica se a conta está ativada (dupla confirmação)
-                if ((int)$user['confirmado'] === 0) {
-                    // Reenviar o link de ativação automaticamente
-                    $token = bin2hex(random_bytes(32));
-                    $expira_em = date('Y-m-d H:i:s', strtotime('+24 hours'));
+            // Sempre define mensagem de sucesso para evitar User Enumeration
+            $sucesso = 'Se este e-mail estiver cadastrado em nosso sistema, um link seguro para redefinição de senha foi enviado. Verifique sua caixa de entrada e pasta de spam.';
 
-                    // Atualizar tokens no banco
-                    $upd = db()->prepare("UPDATE usuarios SET token_confirmacao = :token, token_expira = :expira WHERE id = :id");
-                    $upd->execute([
-                        ':token'   => $token,
-                        ':expira'  => $expira_em,
-                        ':id'      => $user['id']
-                    ]);
+            if ($user) {
+                // E-mail existe! Gera token e expiração (+1 hora)
+                $token = bin2hex(random_bytes(32));
+                $expira_em = date('Y-m-d H:i:s', strtotime('+1 hour'));
 
-                    $link_confirmacao = rtrim(APP_URL, '/') . "/confirmar.php?token=" . $token;
+                // Salva o token de recuperação no banco de dados
+                $upd = db()->prepare("UPDATE usuarios SET token_recuperacao = :token, token_recuperacao_expira = :expira WHERE id = :id");
+                $upd->execute([
+                    ':token'   => $token,
+                    ':expira'  => $expira_em,
+                    ':id'      => $user['id']
+                ]);
 
-                    // Enviar o e-mail via Resend
-                    $assunto = "Ative sua conta — Rajo Diagnóstico";
-                    $corpo_html = '
-                    <div style="font-family: \'Helvetica Neue\', Helvetica, Arial, sans-serif; background-color: #f8fafc; padding: 40px 20px; color: #334155; line-height: 1.6;">
-                        <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; box-shadow: 0 10px 30px rgba(15,23,42,0.05); border: 1px solid #e2e8f0; padding: 40px; text-align: center;">
-                            <div style="display: inline-block; width: 44px; height: 44px; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; font-weight: 900; font-size: 1.5rem; line-height: 44px; border-radius: 10px; margin-bottom: 20px;">R</div>
-                            <h2 style="font-size: 1.5rem; color: #1e293b; font-weight: 700; margin-top: 0; margin-bottom: 10px;">Ative sua Conta de Analista</h2>
-                            <p style="font-size: 0.95rem; color: #64748b; margin-bottom: 30px;">Identificamos que você tentou realizar o login, mas sua conta ainda não foi ativada. Clique no botão abaixo para concluir a ativação.</p>
-                            <a href="' . $link_confirmacao . '" style="display: inline-block; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; text-decoration: none; font-weight: 600; font-size: 0.9rem; padding: 12px 30px; border-radius: 10px; box-shadow: 0 8px 16px rgba(37,99,235,0.25); transition: background 0.3s ease;">Ativar Minha Conta</a>
-                            <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 35px; border-top: 1px solid #f1f5f9; padding-top: 20px;">Se o botão não funcionar, copie e cole o link no seu navegador:<br><a href="' . $link_confirmacao . '" style="color: #2563eb; text-decoration: none;">' . $link_confirmacao . '</a></p>
-                            <p style="font-size: 0.75rem; color: #94a3b8; margin-top: 15px;">Este link é válido por 24 horas.</p>
+                // Constrói o link de recuperação
+                $link_recuperacao = rtrim(APP_URL, '/') . "/redefinir.php?token=" . $token;
+
+                // Envia o e-mail transacional via Resend
+                $assunto = "Recuperação de Senha — Rajo Diagnóstico";
+                $corpo_html = '
+                <div style="font-family: \'Helvetica Neue\', Helvetica, Arial, sans-serif; background-color: #f8fafc; padding: 40px 20px; color: #334155; line-height: 1.6;">
+                    <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; box-shadow: 0 10px 30px rgba(15,23,42,0.05); border: 1px solid #e2e8f0; padding: 40px; text-align: center;">
+                        <div style="display: inline-block; margin-bottom: 25px;">
+                            <img src="' . rtrim(APP_URL, '/') . '/logorajodiag.png" alt="Rajo Diagnóstico" style="height: 38px; width: auto; max-width: 180px; object-fit: contain;">
                         </div>
-                    </div>';
+                        <h2 style="font-size: 1.4rem; color: #1e293b; font-weight: 700; margin-top: 0; margin-bottom: 12px;">Recuperação de Senha</h2>
+                        <p style="font-size: 0.95rem; color: #64748b; margin-bottom: 30px;">Olá, <strong>' . htmlspecialchars($user['nome']) . '</strong>. Recebemos uma solicitação para redefinir a senha da sua conta de analista. Clique no botão abaixo para criar uma nova senha forte.</p>
+                        <a href="' . $link_recuperacao . '" style="display: inline-block; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; text-decoration: none; font-weight: 600; font-size: 0.9rem; padding: 12px 30px; border-radius: 10px; box-shadow: 0 8px 16px rgba(37,99,235,0.25); transition: background 0.3s ease;">Redefinir Minha Senha</a>
+                        <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 35px; border-top: 1px solid #f1f5f9; padding-top: 20px;">Se o botão não funcionar, copie e cole o link abaixo no seu navegador:<br><a href="' . $link_recuperacao . '" style="color: #2563eb; text-decoration: none; font-size: 0.82rem;">' . $link_recuperacao . '</a></p>
+                        <p style="font-size: 0.72rem; color: #94a3b8; margin-top: 15px;">Este link de segurança expira automaticamente em 1 hora.</p>
+                    </div>
+                </div>';
 
-                    enviar_email($user['email'], $assunto, $corpo_html);
-
-                    $erro = 'Sua conta ainda não está ativada. Um novo link de confirmação foi enviado para o seu e-mail.';
-                } else {
-                    // Autenticação concluída com sucesso
-                    $_SESSION['usuario_id'] = $user['id'];
-                    $_SESSION['usuario_nome'] = $user['nome'] ?? $user['email'];
-                    $_SESSION['usuario_login'] = $user['email'];
-                    $_SESSION['usuario_tipo'] = $user['tipo'] ?? 'comum';
-                    
-                    header('Location: index.php');
-                    exit;
-                }
-            } else {
-                $erro = 'E-mail ou senha incorretos.';
+                enviar_email($user['email'], $assunto, $corpo_html);
             }
         } catch (Throwable $e) {
-            $erro = 'Erro ao processar login: ' . $e->getMessage();
+            $erro = 'Erro ao processar solicitação: ' . $e->getMessage();
+            $sucesso = ''; // Limpa sucesso em caso de erro real de banco
         }
     }
 }
@@ -85,7 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Entrar — <?= APP_NAME ?></title>
+    <title>Recuperar Senha — <?= APP_NAME ?></title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -151,32 +142,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border: 1px solid rgba(255, 255, 255, 0.8);
             backdrop-filter: blur(10px);
             padding: 40px 35px;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-
-        .login-card:hover {
-            box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.15);
         }
 
         .brand-logo-container {
             display: flex;
             justify-content: center;
             margin-bottom: 25px;
-        }
-
-        .brand-logo {
-            width: 50px;
-            height: 50px;
-            background: var(--primary-gradient);
-            color: #ffffff;
-            font-family: var(--font-title);
-            font-weight: 900;
-            font-size: 1.8rem;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 14px;
-            box-shadow: 0 10px 20px -5px rgba(37, 99, 235, 0.4);
         }
 
         .login-title {
@@ -194,6 +165,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #64748b;
             font-size: 0.9rem;
             margin-bottom: 30px;
+            line-height: 1.4;
         }
 
         .form-label {
@@ -216,31 +188,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #94a3b8;
             font-size: 1.1rem;
             z-index: 10;
-            transition: color 0.2s ease;
-        }
-
-        .input-group-custom .btn-toggle-pass {
-            position: absolute;
-            right: 15px;
-            top: 50%;
-            transform: translateY(-50%);
-            background: none;
-            border: none;
-            color: #94a3b8;
-            font-size: 1.1rem;
-            padding: 0;
-            cursor: pointer;
-            z-index: 12;
-            transition: color 0.2s ease;
-        }
-
-        .input-group-custom .btn-toggle-pass:hover {
-            color: #2563eb;
         }
 
         .form-control-custom {
             width: 100%;
-            padding: 12px 46px 12px 46px;
+            padding: 12px 20px 12px 46px;
             border-radius: 12px;
             border: 1.5px solid #cbd5e1;
             font-size: 0.95rem;
@@ -260,7 +212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             color: #2563eb;
         }
 
-        .btn-login {
+        .btn-submit {
             background: var(--primary-gradient);
             border: none;
             color: #ffffff !important;
@@ -274,9 +226,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-top: 10px;
         }
 
-        .btn-login:hover,
-        .btn-login:focus,
-        .btn-login:active {
+        .btn-submit:hover,
+        .btn-submit:focus,
+        .btn-submit:active {
             transform: translateY(-2px);
             box-shadow: 0 12px 20px -4px rgba(37, 99, 235, 0.4);
             filter: brightness(1.05);
@@ -292,6 +244,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             display: flex;
             align-items: flex-start;
             gap: 10px;
+            line-height: 1.4;
         }
 
         .alert-danger-custom {
@@ -325,15 +278,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="brand-logo-container">
             <img src="logorajodiag.png" alt="Rajo Diagnóstico" style="height: 50px; width: auto; object-fit: contain;">
         </div>
-        <h4 class="login-title">Rajo Diagnóstico</h4>
-        <p class="login-subtitle">Entre com a sua conta SaaS de analista</p>
-
-        <?php if ($sucesso !== ''): ?>
-            <div class="alert alert-success border-0 shadow-sm d-flex align-items-center gap-2 p-3 mb-4" style="border-radius: 12px; background-color: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; font-size: 0.82rem;">
-                <i class="bi bi-check-circle-fill fs-5 text-success"></i>
-                <div class="small fw-bold"><?= htmlspecialchars($sucesso) ?></div>
-            </div>
-        <?php endif; ?>
+        <h4 class="login-title">Recuperação de Senha</h4>
+        <p class="login-subtitle">Insira o e-mail comercial associado à sua conta de analista para receber o link seguro de redefinição.</p>
 
         <?php if ($erro !== ''): ?>
             <div class="alert-custom alert-danger-custom shadow-sm">
@@ -342,9 +288,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
         <?php endif; ?>
 
-        <form action="login.php" method="POST" autocomplete="off">
+        <?php if ($sucesso !== ''): ?>
+            <div class="alert alert-success border-0 shadow-sm d-flex align-items-start gap-2 p-3 mb-4" style="border-radius: 12px; background-color: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; font-size: 0.82rem; line-height: 1.4;">
+                <i class="bi bi-check-circle-fill fs-5 text-success" style="margin-top:1px;"></i>
+                <div class="fw-bold"><?= htmlspecialchars($sucesso) ?></div>
+            </div>
+        <?php endif; ?>
+
+        <?php if ($sucesso === ''): ?>
+        <form action="recuperar.php" method="POST" autocomplete="off">
             <div class="mb-3">
-                <label for="email" class="form-label">E-mail Comercial</label>
+                <label for="email" class="form-label">Seu E-mail Comercial</label>
                 <div class="input-group-custom">
                     <input type="email" id="email" name="email" 
                            class="form-control-custom" placeholder="exemplo@empresa.com"
@@ -353,28 +307,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
             </div>
 
-            <div class="mb-3">
-                <label for="senha" class="form-label">Sua Senha</label>
-                <div class="input-group-custom">
-                    <input type="password" id="senha" name="senha" 
-                           class="form-control-custom" placeholder="Digite sua senha..." required>
-                    <i class="bi bi-lock input-icon"></i>
-                    <button type="button" class="btn-toggle-pass" onclick="toggleSenha(this)" title="Exibir/ocultar senha">
-                        <i class="bi bi-eye"></i>
-                    </button>
-                </div>
-                <div class="d-flex justify-content-end" style="margin-top: -12px; margin-bottom: 15px;">
-                    <a href="recuperar.php" style="font-size: 0.8rem; color: #2563eb; text-decoration: none; font-weight: 600;">Esqueci minha senha</a>
-                </div>
-            </div>
-
-            <button type="submit" class="btn btn-login">
-                Entrar no Painel <i class="bi bi-arrow-right ms-2"></i>
+            <button type="submit" class="btn btn-submit">
+                Enviar Link de Redefinição <i class="bi bi-send ms-2"></i>
             </button>
         </form>
+        <?php endif; ?>
 
         <div class="footer-text mt-4">
-            Ainda não tem cadastro comercial? <a href="cadastro.php">Crie uma conta</a>
+            Lembrou sua senha? <a href="login.php">Voltar para o Login</a>
         </div>
     </div>
     
@@ -384,18 +324,5 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/js/bootstrap.bundle.min.js"></script>
-<script>
-function toggleSenha(button) {
-    const input = document.getElementById('senha');
-    const icon = button.querySelector('i');
-    if (input.type === 'password') {
-        input.type = 'text';
-        icon.className = 'bi bi-eye-slash';
-    } else {
-        input.type = 'password';
-        icon.className = 'bi bi-eye';
-    }
-}
-</script>
 </body>
 </html>

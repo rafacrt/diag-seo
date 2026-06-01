@@ -10,7 +10,18 @@ exigir_master();
 
 $erro = '';
 $sucesso = '';
-$aba_ativa = $_GET['aba'] ?? 'usuarios';
+
+// Recupera mensagens persistidas na sessão (padrão PRG)
+if (isset($_SESSION['admin_erro'])) {
+    $erro = $_SESSION['admin_erro'];
+    unset($_SESSION['admin_erro']);
+}
+if (isset($_SESSION['admin_sucesso'])) {
+    $sucesso = $_SESSION['admin_sucesso'];
+    unset($_SESSION['admin_sucesso']);
+}
+
+$aba_ativa = $_POST['aba'] ?? $_GET['aba'] ?? 'usuarios';
 
 // ID do administrador logado (para impedir auto-exclusão e auto-rebaixamento)
 $meu_id = (int)$_SESSION['usuario_id'];
@@ -126,17 +137,162 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $aba_ativa = 'avisos';
         }
 
+        // 7. ATUALIZAR DADOS FINANCEIROS DO USUÁRIO
+        elseif ($acao === 'atualizar_financeiro_usuario') {
+            $user_id = (int)($_POST['usuario_id'] ?? 0);
+            $novo_saldo = (float)($_POST['saldo'] ?? 0.00);
+            $custo_usuario = $_POST['custo_relatorio'] !== '' ? (float)$_POST['custo_relatorio'] : null;
+            $novos_bonus = (int)($_POST['bonus_relatorios'] ?? 0);
+
+            // Busca saldo antigo para auditoria e log de ajuste
+            $stmt_u = db()->prepare("SELECT saldo FROM usuarios WHERE id = ?");
+            $stmt_u->execute([$user_id]);
+            $saldo_antigo = (float)$stmt_u->fetchColumn();
+
+            $stmt = db()->prepare("UPDATE usuarios SET saldo = :saldo, custo_relatorio = :custo, bonus_relatorios = :bonus WHERE id = :id");
+            $stmt->execute([
+                ':saldo' => $novo_saldo,
+                ':custo' => $custo_usuario,
+                ':bonus' => $novos_bonus,
+                ':id'    => $user_id
+            ]);
+
+            // Registra transação de ajuste administrativo se houve mudança no saldo
+            if (abs($novo_saldo - $saldo_antigo) > 0.001) {
+                $dif = $novo_saldo - $saldo_antigo;
+                $desc_dif = $dif > 0 
+                    ? "Crédito manual lançado pelo Administrador (R$ " . number_format($dif, 2, ',', '.') . ")" 
+                    : "Ajuste de débito lançado pelo Administrador (R$ " . number_format(abs($dif), 2, ',', '.') . ")";
+                
+                $log = db()->prepare("INSERT INTO transacoes (usuario_id, tipo, valor, descricao, status) VALUES (?, 'recarga', ?, ?, 'concluido')");
+                $log->execute([$user_id, $dif, $desc_dif]);
+            }
+
+            $sucesso = 'Dados financeiros do analista atualizados com sucesso!';
+            $aba_ativa = 'financeiro';
+        }
+
+        // 8. ATUALIZAR CUSTO PADRÃO GLOBAL
+        elseif ($acao === 'atualizar_custo_padrao') {
+            $novo_custo_global = (float)($_POST['custo_relatorio_padrao'] ?? 50.00);
+            
+            $stmt = db()->prepare("UPDATE configuracoes SET valor = ? WHERE chave = 'custo_relatorio_padrao'");
+            $stmt->execute([$novo_custo_global]);
+            
+            $sucesso = 'Custo padrão global do relatório atualizado com sucesso!';
+            $aba_ativa = 'financeiro';
+        }
+
+        // 9. CRIAR CUPOM DE DESCONTO
+        elseif ($acao === 'criar_cupom') {
+            $codigo = strtoupper(trim($_POST['codigo'] ?? ''));
+            $tipo = trim($_POST['tipo'] ?? 'porcentagem');
+            $valor = (float)($_POST['valor'] ?? 0.00);
+            $limite_usos = $_POST['limite_usos'] !== '' ? (int)$_POST['limite_usos'] : null;
+
+            if ($codigo === '') {
+                $erro = 'O código do cupom é obrigatório.';
+            } elseif (!in_array($tipo, ['porcentagem', 'fixo'])) {
+                $erro = 'Tipo de cupom inválido.';
+            } elseif ($valor <= 0) {
+                $erro = 'O valor do cupom deve ser maior que zero.';
+            } else {
+                $stmt = db()->prepare("INSERT INTO cupons (codigo, tipo, valor, limite_usos) VALUES (?, ?, ?, ?)");
+                $stmt->execute([$codigo, $tipo, $valor, $limite_usos]);
+                $sucesso = "Cupom de desconto {$codigo} criado com sucesso!";
+            }
+            $aba_ativa = 'cupons';
+        }
+
+        // 10. EXCLUIR CUPOM
+        elseif ($acao === 'excluir_cupom') {
+            $cupom_id = (int)($_POST['cupom_id'] ?? 0);
+            
+            $stmt = db()->prepare("DELETE FROM cupons WHERE id = ?");
+            $stmt->execute([$cupom_id]);
+            $sucesso = 'Cupom de desconto excluído com sucesso!';
+            $aba_ativa = 'cupons';
+        }
+
+        // 11. APROVAR SOLICITAÇÃO DE RECARGA PENDENTE (APROVAR COMPROVANTE PIX)
+        elseif ($acao === 'aprovar_recarga') {
+            $transacao_id = (int)($_POST['transacao_id'] ?? 0);
+            
+            $stmt_t = db()->prepare("SELECT usuario_id, valor, status FROM transacoes WHERE id = ?");
+            $stmt_t->execute([$transacao_id]);
+            $trans = $stmt_t->fetch();
+
+            if (!$trans) {
+                $erro = 'Transação não encontrada.';
+            } elseif ($trans['status'] !== 'pendente') {
+                $erro = 'Esta transação já foi processada anteriormente.';
+            } else {
+                db()->beginTransaction();
+                try {
+                    $upd_t = db()->prepare("UPDATE transacoes SET status = 'concluido' WHERE id = ?");
+                    $upd_t->execute([$transacao_id]);
+                    
+                    $valor_recarga = (float)$trans['valor'];
+                    $upd_u = db()->prepare("UPDATE usuarios SET saldo = saldo + ? WHERE id = ?");
+                    $upd_u->execute([$valor_recarga, $trans['usuario_id']]);
+                    
+                    db()->commit();
+                    $sucesso = 'Solicitação de recarga confirmada e saldo creditado com sucesso!';
+                } catch (Throwable $ex) {
+                    db()->rollBack();
+                    throw $ex;
+                }
+            }
+            $aba_ativa = 'financeiro';
+        }
+
+        // 12. REJEITAR SOLICITAÇÃO DE RECARGA
+        elseif ($acao === 'rejeitar_recarga') {
+            $transacao_id = (int)($_POST['transacao_id'] ?? 0);
+            
+            $upd = db()->prepare("UPDATE transacoes SET status = 'rejeitado' WHERE id = ?");
+            $upd->execute([$transacao_id]);
+            
+            $sucesso = 'Solicitação de recarga rejeitada com sucesso.';
+            $aba_ativa = 'financeiro';
+        }
+
+        // Salva na sessão para persistir no padrão PRG e redireciona
+        if ($erro !== '') {
+            $_SESSION['admin_erro'] = $erro;
+        }
+        if ($sucesso !== '') {
+            $_SESSION['admin_sucesso'] = $sucesso;
+        }
+        header("Location: admin.php?aba=" . urlencode($aba_ativa));
+        exit;
+
     } catch (Throwable $e) {
-        $erro = 'Erro ao processar solicitação: ' . $e->getMessage();
+        $_SESSION['admin_erro'] = 'Erro ao processar solicitação: ' . $e->getMessage();
+        header("Location: admin.php?aba=" . urlencode($aba_ativa));
+        exit;
     }
 }
 
 // ─── CARREGAMENTO DE DADOS DO BANCO ──────────────────────────────────
 // Buscar todos os usuários
-$usuarios = db()->query("SELECT id, nome, email, confirmado, tipo, criado_em FROM usuarios ORDER BY criado_em DESC")->fetchAll();
+$usuarios = db()->query("SELECT id, nome, email, confirmado, tipo, saldo, custo_relatorio, bonus_relatorios, criado_em FROM usuarios ORDER BY criado_em DESC")->fetchAll();
 
 // Buscar todos os avisos
 $avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM avisos ORDER BY criado_em DESC")->fetchAll();
+
+// Custo padrão global
+$custo_padrao_global = obterCustoRelatorioPadrao();
+
+// Buscar todos os cupons
+$cupons = db()->query("SELECT id, codigo, tipo, valor, limite_usos, usos, ativo, criado_em FROM cupons ORDER BY criado_em DESC")->fetchAll();
+
+// Buscar transações de recarga pendentes
+$transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descricao, t.criado_em, u.nome as usuario_nome, u.email as usuario_email 
+                                      FROM transacoes t 
+                                      JOIN usuarios u ON t.usuario_id = u.id 
+                                      WHERE t.tipo = 'recarga' AND t.status = 'pendente' 
+                                      ORDER BY t.criado_em ASC")->fetchAll();
 
 ?>
 <!DOCTYPE html>
@@ -190,7 +346,7 @@ $avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM 
 
 <nav class="navbar navbar-dark rajo-navbar px-4">
   <a href="index.php" class="navbar-brand fw-bold fs-4 d-flex align-items-center gap-2 text-decoration-none">
-    <span class="rajo-logo-icon">R</span> Rajo Diagnóstico
+    <img src="logorajodiag.png" alt="Rajo Diagnóstico" style="height: 36px; width: auto; object-fit: contain;">
   </a>
   <div class="d-flex align-items-center gap-3">
     <a href="index.php" class="btn btn-outline-light btn-sm d-inline-flex align-items-center gap-1" style="border-radius: 8px;">
@@ -229,6 +385,12 @@ $avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM 
     <ul class="nav admin-nav-tabs border-bottom mb-4" id="adminTab" role="tablist">
         <li class="nav-item">
             <button class="nav-link <?= $aba_ativa === 'usuarios' ? 'active' : '' ?>" id="usuarios-tab" data-bs-toggle="tab" data-bs-target="#usuarios-pane" type="button" role="tab"><i class="bi bi-people me-2"></i>Controle de Analistas</button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link <?= $aba_ativa === 'financeiro' ? 'active' : '' ?>" id="financeiro-tab" data-bs-toggle="tab" data-bs-target="#financeiro-pane" type="button" role="tab"><i class="bi bi-wallet2 me-2"></i>Financeiro &amp; Saldos</button>
+        </li>
+        <li class="nav-item">
+            <button class="nav-link <?= $aba_ativa === 'cupons' ? 'active' : '' ?>" id="cupons-tab" data-bs-toggle="tab" data-bs-target="#cupons-pane" type="button" role="tab"><i class="bi bi-tag me-2"></i>Cupons de Desconto</button>
         </li>
         <li class="nav-item">
             <button class="nav-link <?= $aba_ativa === 'avisos' ? 'active' : '' ?>" id="avisos-tab" data-bs-toggle="tab" data-bs-target="#avisos-pane" type="button" role="tab"><i class="bi bi-megaphone me-2"></i>Avisos do Sistema</button>
@@ -273,7 +435,7 @@ $avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM 
                                 </td>
                                 <td class="text-muted"><?= date('d/m/Y H:i', strtotime($u['criado_em'])) ?></td>
                                 <td class="text-end pe-3">
-                                    <div class="d-flex justify-content-end gap-1.5">
+                                    <div class="d-flex justify-content-end gap-2">
                                         <!-- Botão Atualizar Perfil -->
                                         <?php if ((int)$u['id'] !== $meu_id): ?>
                                         <button class="btn btn-sm btn-outline-primary btn-action-sm" 
@@ -315,7 +477,8 @@ $avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM 
                 <div class="col-12 col-lg-4">
                     <div class="rajo-panel border-0 shadow-sm p-4 bg-white" style="border-radius: 16px;">
                         <h6 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-megaphone-fill text-primary me-2"></i>Publicar Aviso Global</h6>
-                        <form action="admin.php?aba=avisos" method="POST">
+                        <form action="admin.php" method="POST">
+                            <input type="hidden" name="aba" value="avisos">
                             <input type="hidden" name="acao" value="criar_aviso">
                             
                             <div class="mb-3">
@@ -385,7 +548,8 @@ $avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM 
                                                 </span>
                                             </td>
                                             <td>
-                                                <form action="admin.php?aba=avisos" method="POST" class="d-inline">
+                                                <form action="admin.php" method="POST" class="d-inline">
+                                                    <input type="hidden" name="aba" value="avisos">
                                                     <input type="hidden" name="acao" value="alterar_status_aviso">
                                                     <input type="hidden" name="aviso_id" value="<?= $a['id'] ?>">
                                                     <input type="hidden" name="ativo" value="<?= $a['ativo'] == 1 ? '0' : '1' ?>">
@@ -400,7 +564,8 @@ $avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM 
                                             </td>
                                             <td class="text-muted font-monospace" style="font-size: 0.78rem;"><?= date('d/m/Y H:i', strtotime($a['criado_em'])) ?></td>
                                             <td class="text-end pe-3">
-                                                <form action="admin.php?aba=avisos" method="POST" onsubmit="return confirm('Deseja realmente remover esta notificação global do sistema?')" class="d-inline">
+                                                <form action="admin.php" method="POST" onsubmit="return confirm('Deseja realmente remover esta notificação global do sistema?')" class="d-inline">
+                                                    <input type="hidden" name="aba" value="avisos">
                                                     <input type="hidden" name="acao" value="excluir_aviso">
                                                     <input type="hidden" name="aviso_id" value="<?= $a['id'] ?>">
                                                     <button type="submit" class="btn btn-sm btn-outline-danger btn-action-sm">
@@ -414,24 +579,322 @@ $avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM 
                                 </table>
                             </div>
                         <?php endif; ?>
+                    </div> <!-- fecha rajo-panel -->
+                </div> <!-- fecha col-12 col-lg-8 -->
+            </div> <!-- fecha row -->
+        </div> <!-- fecha avisos-pane -->
+
+        <!-- ══ ABA 3: GERENCIAMENTO FINANCEIRO & SALDOS ════════════════════════ -->
+        <div class="tab-pane fade <?= $aba_active = $aba_ativa === 'financeiro' ? 'show active' : '' ?>" id="financeiro-pane" role="tabpanel">
+            <div class="row g-4">
+                
+                <!-- Ajuste de Custo Padrão Global -->
+                <div class="col-12 col-md-4">
+                    <div class="rajo-panel border-0 shadow-sm p-4 bg-white" style="border-radius: 16px;">
+                        <h6 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-gear-fill text-primary me-2"></i>Custo Global do Relatório</h6>
+                        <form action="admin.php" method="POST">
+                                                            <input type="hidden" name="aba" value="financeiro">
+                                                            <input type="hidden" name="acao" value="atualizar_custo_padrao">
+                            
+                            <div class="mb-3">
+                                <label for="custo_relatorio_padrao" class="form-label fw-semibold">Valor Padrão por Emissão (R$)</label>
+                                <input type="number" step="0.01" min="0" id="custo_relatorio_padrao" name="custo_relatorio_padrao" class="form-control form-control-sm" value="<?= htmlspecialchars($custo_padrao_global) ?>" required style="border-radius: 8px;">
+                                <small class="text-muted" style="font-size:0.7rem;">Valor debitado de analistas comuns que não possuem custo personalizado configurado.</small>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary btn-sm w-100 py-2 fw-semibold" style="border-radius: 8px;">
+                                Salvar Custo Padrão <i class="bi bi-check-circle ms-1"></i>
+                            </button>
+                        </form>
                     </div>
                 </div>
+
+                <!-- Solicitações de Recarga Pendentes -->
+                <div class="col-12 col-md-8">
+                    <div class="rajo-panel border-0 shadow-sm p-4 bg-white h-100" style="border-radius: 16px;">
+                        <h6 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-hourglass-split text-warning me-2"></i>Solicitações de Recarga Pendentes (Aprovar PIX)</h6>
+                        
+                        <?php if (empty($transacoes_pendentes)): ?>
+                            <div class="text-center py-4 text-muted small">
+                                <i class="bi bi-emoji-smile fs-4 d-block mb-2 text-success"></i>
+                                Nenhuma solicitação de recarga pendente no momento.
+                            </div>
+                        <?php else: ?>
+                            <div class="table-responsive">
+                                <table class="table align-middle mb-0 text-dark" style="font-size: 0.82rem;">
+                                    <thead class="table-light text-muted">
+                                        <tr>
+                                            <th class="ps-3">Analista</th>
+                                            <th>Valor</th>
+                                            <th>Detalhes</th>
+                                            <th>Data</th>
+                                            <th class="text-end pe-3">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($transacoes_pendentes as $t): ?>
+                                        <tr>
+                                            <td class="ps-3">
+                                                <strong class="text-dark d-block"><?= htmlspecialchars($t['usuario_nome']) ?></strong>
+                                                <span class="text-muted small"><?= htmlspecialchars($t['usuario_email']) ?></span>
+                                            </td>
+                                            <td class="fw-bold text-success">R$ <?= number_format($t['valor'], 2, ',', '.') ?></td>
+                                            <td class="text-muted" style="max-width: 180px; font-size:0.75rem;"><?= htmlspecialchars($t['descricao']) ?></td>
+                                            <td class="text-muted font-monospace" style="font-size: 0.75rem;"><?= date('d/m/Y H:i', strtotime($t['criado_em'])) ?></td>
+                                            <td class="text-end pe-3">
+                                                <div class="d-flex justify-content-end gap-2">
+                                                    <form action="admin.php" method="POST" class="d-inline" onsubmit="return confirm('Deseja realmente APROVAR esta recarga e creditar o saldo na conta do analista?')">
+                                                        <input type="hidden" name="aba" value="financeiro">
+                                                        <input type="hidden" name="acao" value="aprovar_recarga">
+                                                        <input type="hidden" name="transacao_id" value="<?= $t['id'] ?>">
+                                                        <button type="submit" class="btn btn-sm btn-success btn-action-sm" title="Confirmar Recebimento e Creditar Saldo">
+                                                            <i class="bi bi-check-lg"></i>
+                                                        </button>
+                                                    </form>
+                                                    <form action="admin.php" method="POST" class="d-inline" onsubmit="return confirm('Deseja REJEITAR esta solicitação de recarga?')">
+                                                        <input type="hidden" name="aba" value="financeiro">
+                                                        <input type="hidden" name="acao" value="rejeitar_recarga">
+                                                        <input type="hidden" name="transacao_id" value="<?= $t['id'] ?>">
+                                                        <button type="submit" class="btn btn-sm btn-outline-danger btn-action-sm" title="Rejeitar Solicitação">
+                                                            <i class="bi bi-x-lg"></i>
+                                                        </button>
+                                                    </form>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <!-- Gestão de Saldo de Usuários -->
+                <div class="col-12 mt-4">
+                    <div class="rajo-panel border-0 shadow-sm p-4 bg-white" style="border-radius: 16px;">
+                        <h6 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-wallet-fill text-primary me-2"></i>Controle Financeiro de Analistas</h6>
+                        <div class="table-responsive">
+                            <table class="table align-middle mb-0 text-dark" style="font-size: 0.88rem;">
+                                <thead class="table-light text-muted">
+                                    <tr>
+                                        <th class="ps-3">Analista</th>
+                                        <th>Tipo</th>
+                                        <th>Saldo Disponível</th>
+                                        <th>Bônus Disponíveis</th>
+                                        <th>Custo por Emissão</th>
+                                        <th class="text-end pe-3">Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($usuarios as $u): ?>
+                                    <tr>
+                                        <td class="ps-3">
+                                            <strong class="text-dark d-block"><?= htmlspecialchars($u['nome']) ?></strong>
+                                            <span class="text-muted small"><?= htmlspecialchars($u['email']) ?></span>
+                                        </td>
+                                        <td>
+                                            <?php if ($u['tipo'] === 'master'): ?>
+                                                <span class="badge bg-primary px-2.5 py-1" style="border-radius: 8px; font-size:0.68rem;">Master</span>
+                                            <?php else: ?>
+                                                <span class="badge bg-secondary px-2.5 py-1" style="border-radius: 8px; font-size:0.68rem;">Comum</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td class="fw-bold <?= $u['saldo'] > 0 ? 'text-success' : 'text-danger' ?>">
+                                            R$ <?= number_format($u['saldo'], 2, ',', '.') ?>
+                                        </td>
+                                        <td class="fw-bold <?= $u['bonus_relatorios'] > 0 ? 'text-primary' : 'text-muted' ?>">
+                                            <?= (int)$u['bonus_relatorios'] ?> bônus
+                                        </td>
+                                        <td>
+                                            <?php if ($u['tipo'] === 'master'): ?>
+                                                <span class="text-muted italic">Isento (R$ 0,00)</span>
+                                            <?php else: ?>
+                                                <?php if ($u['custo_relatorio'] !== null): ?>
+                                                    <span class="text-success fw-bold">R$ <?= number_format($u['custo_relatorio'], 2, ',', '.') ?></span> 
+                                                    <span class="badge bg-success-subtle text-success border border-success-subtle ms-1" style="font-size:0.6rem; border-radius:6px;">Personalizado</span>
+                                                <?php else: ?>
+                                                    <span class="text-dark">R$ <?= number_format($custo_padrao_global, 2, ',', '.') ?></span>
+                                                    <span class="text-muted small ms-1">(Padrão Global)</span>
+                                                <?php endif; ?>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td class="text-end pe-3">
+                                            <button class="btn btn-sm btn-outline-primary btn-action-sm" 
+                                                    onclick="abrirModalFinanceiro(<?= $u['id'] ?>, '<?= htmlspecialchars($u['nome']) ?>', <?= $u['saldo'] ?>, '<?= $u['custo_relatorio'] ?>', <?= $u['bonus_relatorios'] ?>)" 
+                                                    title="Editar Saldo e Bônus">
+                                                <i class="bi bi-wallet2 text-primary"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- ══ ABA 4: GERENCIAMENTO DE CUPONS DE DESCONTO ══════════════════════ -->
+        <div class="tab-pane fade <?= $aba_active = $aba_ativa === 'cupons' ? 'show active' : '' ?>" id="cupons-pane" role="tabpanel">
+            <div class="row g-4">
+                
+                <!-- Cadastrar Novo Cupom -->
+                <div class="col-12 col-lg-4">
+                    <div class="rajo-panel border-0 shadow-sm p-4 bg-white" style="border-radius: 16px;">
+                        <h6 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-tag-fill text-primary me-2"></i>Criar Novo Cupom</h6>
+                        <form action="admin.php" method="POST">
+                            <input type="hidden" name="aba" value="cupons">
+                            <input type="hidden" name="acao" value="criar_cupom">
+                            
+                            <div class="mb-3">
+                                <label for="codigo" class="form-label">Código do Cupom</label>
+                                <input type="text" id="codigo" name="codigo" class="form-control form-control-sm text-uppercase" placeholder="Ex.: PROMO30" required style="border-radius: 8px;">
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="tipo_cupom" class="form-label">Tipo de Desconto</label>
+                                <select id="tipo_cupom" name="tipo" class="form-select form-select-sm" style="border-radius: 8px;">
+                                    <option value="porcentagem">Porcentagem (%)</option>
+                                    <option value="fixo">Valor Fixo (R$)</option>
+                                </select>
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="valor_cupom" class="form-label">Valor do Desconto</label>
+                                <input type="number" step="0.01" min="0.01" id="valor_cupom" name="valor" class="form-control form-control-sm" placeholder="Ex.: 15.00" required style="border-radius: 8px;">
+                            </div>
+
+                            <div class="mb-3">
+                                <label for="limite_usos" class="form-label">Limite de Usos <span class="text-muted fw-normal">(opcional)</span></label>
+                                <input type="number" min="1" id="limite_usos" name="limite_usos" class="form-control form-control-sm" placeholder="Sem limite" style="border-radius: 8px;">
+                            </div>
+
+                            <button type="submit" class="btn btn-primary btn-sm w-100 py-2 fw-semibold" style="border-radius: 8px;">
+                                Criar Cupom <i class="bi bi-tag ms-1"></i>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Lista de Cupons Ativos -->
+                <div class="col-12 col-lg-8">
+                    <div class="rajo-panel border-0 shadow-sm p-4 bg-white h-100" style="border-radius: 16px;">
+                        <h6 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-list-stars text-primary me-2"></i>Cupons de Desconto Criados</h6>
+                        
+                        <?php if (empty($cupons)): ?>
+                            <div class="text-center py-5 text-muted small">
+                                <i class="bi bi-tag fs-3 d-block mb-2"></i>
+                                Nenhum cupom de desconto criado até o momento.
+                            </div>
+                        <?php else: ?>
+                            <div class="table-responsive">
+                                <table class="table align-middle mb-0 text-dark" style="font-size: 0.88rem;">
+                                    <thead class="table-light text-muted">
+                                        <tr>
+                                            <th class="ps-3">Código</th>
+                                            <th>Tipo</th>
+                                            <th>Desconto</th>
+                                            <th>Utilização</th>
+                                            <th>Criado Em</th>
+                                            <th class="text-end pe-3">Ações</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($cupons as $c): ?>
+                                        <tr>
+                                            <td class="ps-3 fw-bold text-dark font-monospace"><?= htmlspecialchars($c['codigo']) ?></td>
+                                            <td class="text-uppercase" style="font-size:0.75rem;"><?= htmlspecialchars($c['tipo']) ?></td>
+                                            <td class="fw-bold text-primary">
+                                                <?= $c['tipo'] === 'porcentagem' ? (int)$c['valor'] . '%' : 'R$ ' . number_format($c['valor'], 2, ',', '.') ?>
+                                            </td>
+                                            <td>
+                                                <span class="fw-semibold"><?= (int)$c['usos'] ?></span> 
+                                                <span class="text-muted">/ <?= $c['limite_usos'] !== null ? (int)$c['limite_usos'] : '∞' ?> usos</span>
+                                            </td>
+                                            <td class="text-muted font-monospace" style="font-size: 0.78rem;"><?= date('d/m/Y H:i', strtotime($c['criado_em'])) ?></td>
+                                            <td class="text-end pe-3">
+                                                <form action="admin.php" method="POST" onsubmit="return confirm('Deseja realmente remover este cupom de desconto?')" class="d-inline">
+                                                    <input type="hidden" name="aba" value="cupons">
+                                                    <input type="hidden" name="acao" value="excluir_cupom">
+                                                    <input type="hidden" name="cupom_id" value="<?= $c['id'] ?>">
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger btn-action-sm">
+                                                        <i class="bi bi-trash-fill"></i>
+                                                    </button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
             </div>
         </div>
 
     </div>
 </div>
 
+<!-- ══ MODAL FINANCEIRO DO USUÁRIO ════════════════════════════════════ -->
+<div class="modal fade" id="modalFinanceiro" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content border-0 shadow" style="border-radius: 16px;">
+      <form action="admin.php" method="POST">
+        <input type="hidden" name="aba" value="financeiro">
+        <input type="hidden" name="acao" value="atualizar_financeiro_usuario">
+        <input type="hidden" name="usuario_id" id="fin_usuario_id">
+        
+        <div class="modal-header border-0 pb-0">
+          <h6 class="modal-title fw-bold text-dark d-flex align-items-center gap-2" style="font-family: var(--font-title);"><i class="bi bi-wallet2 text-primary fs-5"></i> Configurações Financeiras</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" style="font-size: 0.8rem;"></button>
+        </div>
+        <div class="modal-body pt-3">
+          <p class="small text-muted mb-3">Ajuste o saldo, configure bônus ou custo personalizado para <strong id="fin_nome_usuario" class="text-dark"></strong>:</p>
+          
+          <div class="mb-3">
+            <label for="fin_saldo" class="form-label small fw-bold">Saldo Financeiro (R$)</label>
+            <input type="number" step="0.01" min="0" id="fin_saldo" name="saldo" class="form-control form-control-sm" required style="border-radius: 8px;">
+            <small class="text-muted" style="font-size:0.7rem;">Saldo disponível para débito na emissão de relatórios.</small>
+          </div>
+
+          <div class="mb-3">
+            <label for="fin_custo" class="form-label small fw-bold">Custo Personalizado por Relatório (R$)</label>
+            <input type="number" step="0.01" min="0" id="fin_custo" name="custo_relatorio" class="form-control form-control-sm" placeholder="Deixe vazio para usar o custo padrão global" style="border-radius: 8px;">
+            <small class="text-muted" style="font-size:0.7rem;">Custo especial cobrado deste analista. Se nulo, usa o custo padrão global.</small>
+          </div>
+
+          <div class="mb-3">
+            <label for="fin_bonus" class="form-label small fw-bold">Relatórios Bônus Grátis</label>
+            <input type="number" min="0" id="fin_bonus" name="bonus_relatorios" class="form-control form-control-sm" required style="border-radius: 8px;">
+            <small class="text-muted" style="font-size:0.7rem;">Quantidade de emissões gratuitas restantes para este usuário.</small>
+          </div>
+
+        </div>
+        <div class="modal-footer border-0 pt-0 justify-content-end gap-2">
+          <button type="button" class="btn btn-sm btn-light px-3 py-2 fw-semibold" style="border-radius: 8px;" data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" class="btn btn-sm btn-primary px-3 py-2 fw-semibold" style="border-radius: 8px;">Salvar Alterações</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <!-- ══ MODAL 1: EDITAR TIPO/NÍVEL DE ACESSO ════════════════════════════ -->
 <div class="modal fade" id="modalTipo" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered modal-sm">
     <div class="modal-content border-0 shadow" style="border-radius: 16px;">
-      <form action="admin.php?aba=usuarios" method="POST">
+      <form action="admin.php" method="POST">
+        <input type="hidden" name="aba" value="usuarios">
         <input type="hidden" name="acao" value="atualizar_tipo">
         <input type="hidden" name="usuario_id" id="tipo_usuario_id">
         
         <div class="modal-header border-0 pb-0">
-          <h6 class="modal-title fw-bold text-dark d-flex align-items-center gap-1.5" style="font-family: var(--font-title);"><i class="bi bi-shield-exclamation text-primary fs-5"></i> Nível de Acesso</h6>
+          <h6 class="modal-title fw-bold text-dark d-flex align-items-center gap-2" style="font-family: var(--font-title);"><i class="bi bi-shield-exclamation text-primary fs-5"></i> Nível de Acesso</h6>
           <button type="button" class="btn-close" data-bs-dismiss="modal" style="font-size: 0.8rem;"></button>
         </div>
         <div class="modal-body pt-3">
@@ -454,12 +917,13 @@ $avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM 
 <div class="modal fade" id="modalSenha" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow" style="border-radius: 16px;">
-      <form action="admin.php?aba=usuarios" method="POST" autocomplete="off" onsubmit="return validarSenhaReset(event)">
+      <form action="admin.php" method="POST" autocomplete="off" onsubmit="return validarSenhaReset(event)">
+        <input type="hidden" name="aba" value="usuarios">
         <input type="hidden" name="acao" value="resetar_senha">
         <input type="hidden" name="usuario_id" id="senha_usuario_id">
         
         <div class="modal-header border-0 pb-0">
-          <h6 class="modal-title fw-bold text-dark d-flex align-items-center gap-1.5" style="font-family: var(--font-title);"><i class="bi bi-key-fill text-warning fs-5"></i> Redefinir Senha Comercial</h6>
+          <h6 class="modal-title fw-bold text-dark d-flex align-items-center gap-2" style="font-family: var(--font-title);"><i class="bi bi-key-fill text-warning fs-5"></i> Redefinir Senha Comercial</h6>
           <button type="button" class="btn-close" data-bs-dismiss="modal" style="font-size: 0.8rem;"></button>
         </div>
         <div class="modal-body pt-3">
@@ -483,7 +947,7 @@ $avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM 
 
           <!-- Box de validação dinâmica -->
           <div class="password-strength-box p-3 bg-light border" style="border-radius: 12px; font-size: 0.74rem;">
-                <div class="strength-title font-weight-bold mb-1.5">Requisitos exigidos:</div>
+                <div class="strength-title font-weight-bold mb-2">Requisitos exigidos:</div>
                 <div class="strength-rule" id="m-rule-len" style="font-size:0.75rem;"><i class="bi bi-circle"></i> Mínimo de 8 caracteres</div>
                 <div class="strength-rule" id="m-rule-upper" style="font-size:0.75rem;"><i class="bi bi-circle"></i> Pelo menos 1 maiúscula (A-Z)</div>
                 <div class="strength-rule" id="m-rule-lower" style="font-size:0.75rem;"><i class="bi bi-circle"></i> Pelo menos 1 minúscula (a-z)</div>
@@ -505,12 +969,13 @@ $avisos = db()->query("SELECT id, titulo, mensagem, tipo, ativo, criado_em FROM 
 <div class="modal fade" id="modalExcluirUsuario" tabindex="-1">
   <div class="modal-dialog modal-dialog-centered modal-sm">
     <div class="modal-content border-0 shadow" style="border-radius: 16px;">
-      <form action="admin.php?aba=usuarios" method="POST">
+      <form action="admin.php" method="POST">
+        <input type="hidden" name="aba" value="usuarios">
         <input type="hidden" name="acao" value="excluir_usuario">
         <input type="hidden" name="usuario_id" id="excluir_usuario_id">
         
         <div class="modal-header border-0 pb-0">
-          <h6 class="modal-title fw-bold text-danger d-flex align-items-center gap-1.5" style="font-family: var(--font-title);"><i class="bi bi-exclamation-octagon-fill text-danger fs-5"></i> Excluir Conta</h6>
+          <h6 class="modal-title fw-bold text-danger d-flex align-items-center gap-2" style="font-family: var(--font-title);"><i class="bi bi-exclamation-octagon-fill text-danger fs-5"></i> Excluir Conta</h6>
           <button type="button" class="btn-close" data-bs-dismiss="modal" style="font-size: 0.8rem;"></button>
         </div>
         <div class="modal-body pt-3">
@@ -549,6 +1014,15 @@ function abrirModalExcluir(id, nome) {
     document.getElementById('excluir_usuario_id').value = id;
     document.getElementById('excluir_nome_usuario').textContent = nome;
     new bootstrap.Modal(document.getElementById('modalExcluirUsuario')).show();
+}
+
+function abrirModalFinanceiro(id, nome, saldo, custo, bonus) {
+    document.getElementById('fin_usuario_id').value = id;
+    document.getElementById('fin_nome_usuario').textContent = nome;
+    document.getElementById('fin_saldo').value = parseFloat(saldo).toFixed(2);
+    document.getElementById('fin_custo').value = custo !== '' && custo !== null ? parseFloat(custo).toFixed(2) : '';
+    document.getElementById('fin_bonus').value = parseInt(bonus);
+    new bootstrap.Modal(document.getElementById('modalFinanceiro')).show();
 }
 
 // Ocultar/mostrar senha no modal

@@ -3,3 +3,4 @@ form.php.bak
 .gemini/
 .git/
 *.log
+config-local.php

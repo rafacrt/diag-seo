@@ -26,6 +26,33 @@ try {
     try {
         db()->exec("ALTER TABLE relatorios ADD COLUMN bloquear_plano TINYINT(1) DEFAULT 0");
     } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE relatorios ADD COLUMN auditoria_cms VARCHAR(100) DEFAULT NULL");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE relatorios ADD COLUMN auditoria_hospedagem TEXT DEFAULT NULL");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE relatorios ADD COLUMN auditoria_seguranca TEXT DEFAULT NULL");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE relatorios ADD COLUMN auditoria_dns TEXT DEFAULT NULL");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE relatorios ADD COLUMN tipo_relatorio VARCHAR(20) DEFAULT 'completo'");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE relatorios ADD COLUMN ads_nicho VARCHAR(100) DEFAULT NULL");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE relatorios ADD COLUMN ads_investimento DECIMAL(10,2) DEFAULT NULL");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE relatorios ADD COLUMN ads_cpc DECIMAL(10,2) DEFAULT NULL");
+    } catch (Throwable $e) {}
+    try {
+        db()->exec("ALTER TABLE relatorios ADD COLUMN screenshot_path VARCHAR(255) DEFAULT NULL");
+    } catch (Throwable $e) {}
 
     $usuario_id = (int)$_SESSION['usuario_id'];
     $is_master = e_master();
@@ -94,15 +121,31 @@ try {
 
 <nav class="navbar navbar-dark rajo-navbar px-4">
   <div class="container-fluid d-flex justify-content-between align-items-center">
-    <span class="navbar-brand fw-bold fs-4 d-flex align-items-center gap-2" style="font-family: var(--font-title);">
-      <span class="rajo-logo-icon">R</span> Rajo Diagnóstico
-    </span>
+    <a href="index.php" class="navbar-brand fw-bold fs-4 d-flex align-items-center gap-2 text-decoration-none" style="font-family: var(--font-title);">
+      <img src="logorajodiag.png" alt="Rajo Diagnóstico" style="height: 36px; width: auto; object-fit: contain;">
+    </a>
     <span class="text-white-50 small d-none d-lg-block" style="font-weight: 500;">Painel de Controle e Auditoria Técnica de Sites</span>
     <div class="d-flex align-items-center gap-3">
       <?php if (e_master()): ?>
       <a href="admin.php" class="btn btn-sm btn-warning px-3 py-1.5 d-inline-flex align-items-center gap-1" style="border-radius: 8px; font-weight: 600; font-size: 0.85rem; color: #1e293b;">
         <i class="bi bi-shield-lock-fill"></i> Administração
       </a>
+      <?php else: ?>
+        <?php 
+          // Carrega saldo rápido do analista logado
+          $stmt_s = db()->prepare("SELECT saldo, bonus_relatorios FROM usuarios WHERE id = ?");
+          $stmt_s->execute([$_SESSION['usuario_id']]);
+          $s_rapido = $stmt_s->fetch();
+          $saldo_rapido = (float)($s_rapido['saldo'] ?? 0.00);
+          $bonus_rapido = (int)($s_rapido['bonus_relatorios'] ?? 0);
+        ?>
+        <a href="financeiro.php" class="btn btn-sm btn-success px-3 py-1.5 d-inline-flex align-items-center gap-1.5" style="border-radius: 8px; font-weight: 600; font-size: 0.85rem;" title="Acessar Meu Painel Financeiro">
+          <i class="bi bi-wallet2 me-2"></i> 
+          <span>R$ <?= number_format($saldo_rapido, 2, ',', '.') ?></span>
+          <?php if ($bonus_rapido > 0): ?>
+            <span class="badge bg-white text-success ms-1 small" style="font-size:0.65rem; border-radius:10px;">+<?= $bonus_rapido ?> Bônus</span>
+          <?php endif; ?>
+        </a>
       <?php endif; ?>
       <div class="text-white small d-none d-md-flex align-items-center gap-2">
         <i class="bi bi-person-circle text-white-50"></i>
@@ -226,16 +269,43 @@ try {
           </div>
         </div>
         <div class="card-footer bg-light border-0 py-3 px-4 d-flex gap-2">
-          <a href="form.php?id=<?= $r['id'] ?>" class="btn btn-sm btn-outline-primary flex-fill d-inline-flex align-items-center justify-content-center gap-1" style="border-radius: 8px;">
+          <a href="form.php?id=<?= $r['id'] ?>" class="btn btn-sm btn-outline-primary flex-fill d-inline-flex align-items-center justify-content-center gap-1" style="border-radius: 8px;" title="Editar Diagnóstico">
             <i class="bi bi-pencil-square"></i> Editar
           </a>
-          <a href="visualizar.php?id=<?= $r['id'] ?>" class="btn btn-sm btn-outline-dark flex-fill d-inline-flex align-items-center justify-content-center gap-1" style="border-radius: 8px;" target="_blank">
-            <i class="bi bi-eye"></i> Online
-          </a>
-          <a href="pdf.php?id=<?= $r['id'] ?>" class="btn btn-sm btn-danger flex-fill d-inline-flex align-items-center justify-content-center gap-1" style="border-radius: 8px;" target="_blank">
-            <i class="bi bi-file-earmark-pdf-fill"></i> PDF
-          </a>
-          <button class="btn btn-sm btn-outline-danger d-inline-flex align-items-center justify-content-center" style="border-radius: 8px; width: 36px; height: 36px;" onclick="confirmarExclusao(<?= $r['id'] ?>, '<?= e($r['cliente']) ?>')" title="Excluir Diagnóstico">
+          
+          <!-- Dropdown Online -->
+          <div class="dropdown flex-fill">
+            <button class="btn btn-sm btn-outline-dark w-100 d-inline-flex align-items-center justify-content-center gap-1 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="border-radius: 8px;">
+              <i class="bi bi-eye"></i> Online
+            </button>
+            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end shadow border-0" style="border-radius: 12px; font-size: 0.82rem;">
+              <li class="dropdown-header text-white-50 fw-bold small text-uppercase" style="font-size: 0.68rem; letter-spacing: 0.05em;">Relatório Completo</li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2 py-2" href="visualizar.php?id=<?= $r['id'] ?>&formato=completo&plano=liberado" target="_blank"><i class="bi bi-check-circle-fill text-success"></i> Completo + Plano Ativo</a></li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2 py-2" href="visualizar.php?id=<?= $r['id'] ?>&formato=completo&plano=oculto" target="_blank"><i class="bi bi-eye-slash-fill text-warning"></i> Completo + Plano Oculto</a></li>
+              <li><hr class="dropdown-divider border-secondary"></li>
+              <li class="dropdown-header text-white-50 fw-bold small text-uppercase" style="font-size: 0.68rem; letter-spacing: 0.05em;">Relatório Compacto</li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2 py-2" href="visualizar.php?id=<?= $r['id'] ?>&formato=compacto&plano=liberado" target="_blank"><i class="bi bi-check-circle-fill text-success"></i> Compacto + Plano Ativo</a></li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2 py-2" href="visualizar.php?id=<?= $r['id'] ?>&formato=compacto&plano=oculto" target="_blank"><i class="bi bi-eye-slash-fill text-warning"></i> Compacto + Plano Oculto</a></li>
+            </ul>
+          </div>
+
+          <!-- Dropdown PDF -->
+          <div class="dropdown flex-fill">
+            <button class="btn btn-sm btn-danger w-100 d-inline-flex align-items-center justify-content-center gap-1 dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" style="border-radius: 8px;">
+              <i class="bi bi-file-earmark-pdf-fill"></i> PDF
+            </button>
+            <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end shadow border-0" style="border-radius: 12px; font-size: 0.82rem;">
+              <li class="dropdown-header text-white-50 fw-bold small text-uppercase" style="font-size: 0.68rem; letter-spacing: 0.05em;">Relatório Completo</li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2 py-2" href="pdf.php?id=<?= $r['id'] ?>&formato=completo&plano=liberado" target="_blank"><i class="bi bi-file-earmark-pdf-fill text-danger"></i> Completo + Plano Ativo</a></li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2 py-2" href="pdf.php?id=<?= $r['id'] ?>&formato=completo&plano=oculto" target="_blank"><i class="bi bi-file-earmark-lock-fill text-warning"></i> Completo + Plano Oculto</a></li>
+              <li><hr class="dropdown-divider border-secondary"></li>
+              <li class="dropdown-header text-white-50 fw-bold small text-uppercase" style="font-size: 0.68rem; letter-spacing: 0.05em;">Relatório Compacto</li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2 py-2" href="pdf.php?id=<?= $r['id'] ?>&formato=compacto&plano=liberado" target="_blank"><i class="bi bi-file-earmark-pdf-fill text-danger"></i> Compacto + Plano Ativo</a></li>
+              <li><a class="dropdown-item d-flex align-items-center gap-2 py-2" href="pdf.php?id=<?= $r['id'] ?>&formato=compacto&plano=oculto" target="_blank"><i class="bi bi-file-earmark-lock-fill text-warning"></i> Compacto + Plano Oculto</a></li>
+            </ul>
+          </div>
+
+          <button class="btn btn-sm btn-outline-danger d-inline-flex align-items-center justify-content-center" style="border-radius: 8px; width: 36px; height: 36px; flex-shrink: 0;" onclick="confirmarExclusao(<?= $r['id'] ?>, '<?= e($r['cliente']) ?>')" title="Excluir Diagnóstico">
             <i class="bi bi-trash3-fill"></i>
           </button>
         </div>

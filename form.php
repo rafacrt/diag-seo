@@ -31,6 +31,18 @@ $acoes = json_decode($d['acoes'] ?? '[]', true) ?: [[
     'responsavel' => 'Desenvolvedor',
     'prazo'       => '',
 ]];
+$user_id = (int)$_SESSION['usuario_id'];
+$stmt_u = db()->prepare("SELECT tipo, saldo, bonus_relatorios FROM usuarios WHERE id = ?");
+$stmt_u->execute([$user_id]);
+$u_financeiro = $stmt_u->fetch();
+
+$user_tipo = $u_financeiro['tipo'] ?? 'comum';
+$user_saldo = (float)($u_financeiro['saldo'] ?? 0.00);
+$user_bonus = (int)($u_financeiro['bonus_relatorios'] ?? 0);
+$custo_emissao = obterCustoUsuario($user_id);
+
+$exige_saldo = ($id === 0 && $user_tipo !== 'master');
+$pode_emitir = !$exige_saldo || ($user_bonus > 0 || $user_saldo >= $custo_emissao);
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -49,13 +61,29 @@ $acoes = json_decode($d['acoes'] ?? '[]', true) ?: [[
 
 <nav class="navbar navbar-dark rajo-navbar px-4">
   <a href="index.php" class="navbar-brand fw-bold fs-4 d-flex align-items-center gap-2 text-decoration-none">
-    <span class="rajo-logo-icon">R</span> Rajo Diagnóstico
+    <img src="logorajodiag.png" alt="Rajo Diagnóstico" style="height: 36px; width: auto; object-fit: contain;">
   </a>
   <div class="d-flex align-items-center gap-3">
     <?php if (e_master()): ?>
     <a href="admin.php" class="btn btn-sm btn-warning px-3 py-1.5 d-inline-flex align-items-center gap-1" style="border-radius: 8px; font-weight: 600; font-size: 0.85rem; color: #1e293b;">
       <i class="bi bi-shield-lock-fill"></i> Administração
     </a>
+    <?php else: ?>
+      <?php 
+        // Carrega saldo rápido do analista logado
+        $stmt_s = db()->prepare("SELECT saldo, bonus_relatorios FROM usuarios WHERE id = ?");
+        $stmt_s->execute([$_SESSION['usuario_id']]);
+        $s_rapido = $stmt_s->fetch();
+        $saldo_rapido = (float)($s_rapido['saldo'] ?? 0.00);
+        $bonus_rapido = (int)($s_rapido['bonus_relatorios'] ?? 0);
+      ?>
+      <a href="financeiro.php" class="btn btn-sm btn-success px-3 py-1.5 d-inline-flex align-items-center gap-1.5" style="border-radius: 8px; font-weight: 600; font-size: 0.85rem;" title="Acessar Meu Painel Financeiro">
+        <i class="bi bi-wallet2 me-2"></i> 
+        <span>R$ <?= number_format($saldo_rapido, 2, ',', '.') ?></span>
+        <?php if ($bonus_rapido > 0): ?>
+          <span class="badge bg-white text-success ms-1 small" style="font-size:0.65rem; border-radius:10px;">+<?= $bonus_rapido ?> Bônus</span>
+        <?php endif; ?>
+      </a>
     <?php endif; ?>
     <a href="index.php" class="btn btn-outline-light btn-sm d-inline-flex align-items-center gap-1" style="border-radius: 8px;">
       <i class="bi bi-arrow-left"></i> Dashboard
@@ -89,10 +117,11 @@ $acoes = json_decode($d['acoes'] ?? '[]', true) ?: [[
       1 => ['icon'=>'person-badge',      'label'=>'Cliente'],
       2 => ['icon'=>'speedometer2',       'label'=>'Pontuações'],
       3 => ['icon'=>'bar-chart-line',     'label'=>'Web Vitals'],
-      4 => ['icon'=>'exclamation-triangle','label'=>'Problemas'],
-      5 => ['icon'=>'list-check',         'label'=>'Plano'],
-      6 => ['icon'=>'chat-left-text',     'label'=>'Conclusão'],
-      7 => ['icon'=>'check2-circle',      'label'=>'Revisão'],
+      4 => ['icon'=>'google',             'label'=>'Mídia Paga'],
+      5 => ['icon'=>'exclamation-triangle','label'=>'Problemas'],
+      6 => ['icon'=>'list-check',         'label'=>'Plano'],
+      7 => ['icon'=>'chat-left-text',     'label'=>'Conclusão'],
+      8 => ['icon'=>'check2-circle',      'label'=>'Revisão'],
     ];
     foreach ($passos as $n => $p): ?>
     <div class="rajo-step" data-step="<?= $n ?>" onclick="goStep(<?= $n ?>)">
@@ -144,6 +173,26 @@ $acoes = json_decode($d['acoes'] ?? '[]', true) ?: [[
               </button>
             </div>
             <small class="text-muted d-block mt-1" style="font-size: 0.72rem;">Insira o domínio e clique em <strong>Auditar via PageSpeed</strong> para importar notas automaticamente do Google!</small>
+
+            <?php
+            $ja_auditado = false;
+            if (
+                (isset($d['ps_performance_desktop']) && $d['ps_performance_desktop'] !== '') ||
+                (isset($d['ps_performance_mobile']) && $d['ps_performance_mobile'] !== '')
+            ) {
+                $ja_auditado = true;
+            }
+            ?>
+            <!-- Indicador de Status do PageSpeed -->
+            <div id="pagespeed-status-indicator" class="mt-3 p-3 rounded-3 align-items-center gap-2 border" style="display: <?= $ja_auditado ? 'flex' : 'none' ?>; background-color: #f0fdf4; border-color: #bbf7d0; color: #15803d; font-size: 0.85rem;">
+              <i class="bi bi-check-circle-fill text-success fs-5"></i>
+              <div>
+                <strong class="d-block" style="font-size: 0.9rem;">Relatório de Auditoria Concluído</strong>
+                <span style="font-size: 0.78rem; color: #166534;">
+                  As notas e problemas do site <code class="audit-domain-text" style="color: #14532d; background-color: #dcfce7; padding: 2px 6px; border-radius: 4px; font-weight: 600; font-family: monospace;"><?= e($d['dominio'] ?? '') ?></code> foram importados com sucesso. Você pode avançar para as próximas etapas.
+                </span>
+              </div>
+            </div>
           </div>
           <div class="col-12 col-md-4">
             <label class="form-label fw-semibold">Data do Relatório <span class="text-danger">*</span></label>
@@ -182,6 +231,16 @@ $acoes = json_decode($d['acoes'] ?? '[]', true) ?: [[
                    value="<?= e($d['logo_cliente'] ?? '') ?>" placeholder="Ex.: https://site.com/logo.png">
             <small class="text-muted" style="font-size: 0.72rem;">Se preenchido, esta logo será exibida com destaque na capa do PDF e no Painel Online.</small>
           </div>
+          <div class="col-12 mt-3">
+            <label class="form-label fw-semibold">Formato de Exportação do Diagnóstico</label>
+            <select class="form-select" name="tipo_relatorio">
+              <option value="completo" <?= ($d['tipo_relatorio'] ?? 'completo') === 'completo' ? 'selected' : '' ?>>📋 Relatório Completo (Capa longa + Seções individuais detalhadas)</option>
+              <option value="compacto" <?= ($d['tipo_relatorio'] ?? 'completo') === 'compacto' ? 'selected' : '' ?>>⚡ Relatório Compacto (Exatamente 1 página resumida de alta conversão)</option>
+            </select>
+            <small class="text-muted" style="font-size: 0.72rem;">O formato compacto economiza espaço e consolida todos os pontos técnicos em uma única página A4 no PDF.</small>
+          </div>
+
+          <input type="hidden" name="screenshot_path" id="input-screenshot-path" value="<?= e($d['screenshot_path'] ?? '') ?>">
         </div>
       </div>
       <div class="d-flex justify-content-end mt-3">
@@ -232,6 +291,109 @@ $acoes = json_decode($d['acoes'] ?? '[]', true) ?: [[
               <?php endforeach; ?>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- Painel de Auditoria de Infraestrutura & Segurança -->
+      <div class="rajo-panel mt-3">
+        <div class="rajo-panel-title">
+          <i class="bi bi-shield-check me-2"></i>Diagnóstico de Infraestrutura & Segurança
+        </div>
+        <p class="text-muted small mb-3">
+          Estes dados são coletados de forma 100% automática a partir do cURL backend quando você realiza a auditoria do PageSpeed no Passo 1!
+        </p>
+        
+        <div class="row g-3">
+          <!-- Card CMS -->
+          <div class="col-12 col-md-6 col-lg-3">
+            <div class="card h-100 border-0 bg-light p-3 rounded-3 shadow-xs">
+              <div class="d-flex align-items-center gap-2 mb-2 text-primary">
+                <i class="bi bi-cpu-fill fs-5"></i>
+                <h6 class="fw-bold mb-0" style="font-size: 0.88rem; font-family: var(--font-title);">Plataforma / CMS</h6>
+              </div>
+              <span id="badge-cms" class="badge py-2 px-3 align-self-start border rounded-3" style="font-size: 0.76rem; background-color: #f1f5f9; border-color: #cbd5e1; color: #475569;">
+                <?= !empty($d['auditoria_cms']) ? e($d['auditoria_cms']) : 'Aguardando Auditoria' ?>
+              </span>
+              <input type="hidden" name="auditoria_cms" id="input-auditoria-cms" value="<?= e($d['auditoria_cms'] ?? '') ?>">
+            </div>
+          </div>
+          
+          <!-- Card Hospedagem -->
+          <div class="col-12 col-md-6 col-lg-3">
+            <div class="card h-100 border-0 bg-light p-3 rounded-3 shadow-xs">
+              <div class="d-flex align-items-center gap-2 mb-2 text-primary">
+                <i class="bi bi-server fs-5"></i>
+                <h6 class="fw-bold mb-0" style="font-size: 0.88rem; font-family: var(--font-title);">Hospedagem & IP</h6>
+              </div>
+              <div id="text-hospedagem" class="text-muted small lh-sm">
+                <?php
+                $geo = !empty($d['auditoria_hospedagem']) ? json_decode($d['auditoria_hospedagem'], true) : null;
+                if ($geo && ($geo['pais'] !== 'Não Identificado' || $geo['provedor'] !== 'Não Identificado')): ?>
+                  <strong>Provedor:</strong> <?= e($geo['provedor']) ?><br>
+                  <strong>Local:</strong> <?= e($geo['cidade']) ?>, <?= e($geo['pais']) ?><br>
+                  <strong>IP:</strong> <span class="font-monospace text-xs"><?= e($geo['ip']) ?></span>
+                <?php else: ?>
+                  <span class="text-muted">Aguardando Auditoria</span>
+                <?php endif; ?>
+              </div>
+              <input type="hidden" name="auditoria_hospedagem" id="input-auditoria-hospedagem" value="<?= e($d['auditoria_hospedagem'] ?? '') ?>">
+            </div>
+          </div>
+          
+          <!-- Card Segurança HTTP -->
+          <div class="col-12 col-md-6 col-lg-3">
+            <div class="card h-100 border-0 bg-light p-3 rounded-3 shadow-xs">
+              <div class="d-flex align-items-center gap-2 mb-2 text-primary">
+                <i class="bi bi-lock-fill fs-5"></i>
+                <h6 class="fw-bold mb-0" style="font-size: 0.88rem; font-family: var(--font-title);">Segurança HTTP & SSL</h6>
+              </div>
+              <div id="text-seguranca" class="small lh-sm text-muted">
+                <?php
+                $seg = !empty($d['auditoria_seguranca']) ? json_decode($d['auditoria_seguranca'], true) : null;
+                if ($seg): ?>
+                  <div class="d-flex align-items-center gap-1.5 mb-1">
+                    <span class="badge rounded-circle p-1 d-inline-flex bg-<?= $seg['ssl_ativo'] ? 'success' : 'danger' ?>-subtle text-<?= $seg['ssl_ativo'] ? 'success' : 'danger' ?>"><i class="bi bi-<?= $seg['ssl_ativo'] ? 'shield-fill-check' : 'shield-fill-x' ?>"></i></span> 
+                    <strong>SSL:</strong> <?= $seg['ssl_ativo'] ? 'Ativo (Seguro)' : 'Inativo' ?>
+                  </div>
+                  <?php
+                  $ativos = 0;
+                  foreach (['hsts', 'csp', 'x_frame', 'x_content', 'referrer'] as $chk) {
+                      if (!empty($seg[$chk])) $ativos++;
+                  }
+                  ?>
+                  <strong>Nível Proteção:</strong> <?= $ativos ?>/5 ativos
+                <?php else: ?>
+                  <span class="text-muted">Aguardando Auditoria</span>
+                <?php endif; ?>
+              </div>
+              <input type="hidden" name="auditoria_seguranca" id="input-auditoria-seguranca" value="<?= e($d['auditoria_seguranca'] ?? '') ?>">
+            </div>
+          </div>
+          
+          <!-- Card E-mail DNS -->
+          <div class="col-12 col-md-6 col-lg-3">
+            <div class="card h-100 border-0 bg-light p-3 rounded-3 shadow-xs">
+              <div class="d-flex align-items-center gap-2 mb-2 text-primary">
+                <i class="bi bi-envelope-check-fill fs-5"></i>
+                <h6 class="fw-bold mb-0" style="font-size: 0.88rem; font-family: var(--font-title);">Segurança de E-mail</h6>
+              </div>
+              <div id="text-dns" class="small lh-sm text-muted">
+                <?php
+                $dns = !empty($d['auditoria_dns']) ? json_decode($d['auditoria_dns'], true) : null;
+                if ($dns): ?>
+                  <div class="d-flex align-items-center gap-1 mb-1">
+                    <span class="badge px-2 py-1 bg-<?= $dns['spf_valido'] ? 'success' : 'danger' ?>-subtle text-<?= $dns['spf_valido'] ? 'success' : 'danger' ?> border" style="font-size: 0.68rem;"><?= $dns['spf_valido'] ? '✓ SPF OK' : '✗ Sem SPF' ?></span>
+                  </div>
+                  <div class="d-flex align-items-center gap-1">
+                    <span class="badge px-2 py-1 bg-<?= $dns['dmarc_valido'] ? 'success' : 'danger' ?>-subtle text-<?= $dns['dmarc_valido'] ? 'success' : 'danger' ?> border" style="font-size: 0.68rem;"><?= $dns['dmarc_valido'] ? '✓ DMARC OK' : '✗ Sem DMARC' ?></span>
+                  </div>
+                <?php else: ?>
+                  <span class="text-muted">Aguardando Auditoria</span>
+                <?php endif; ?>
+              </div>
+              <input type="hidden" name="auditoria_dns" id="input-auditoria-dns" value="<?= e($d['auditoria_dns'] ?? '') ?>">
+            </div>
+          </div>
         </div>
       </div>
 
@@ -503,8 +665,94 @@ $acoes = json_decode($d['acoes'] ?? '[]', true) ?: [[
       </div>
     </div>
 
-    <!-- ══ STEP 4: Problemas Identificados ═══════════════════════ -->
+    <!-- ══ STEP 4: Mídia Paga (Google Ads) ═══════════════════════ -->
     <div class="step-panel d-none" id="step4">
+      <div class="rajo-panel shadow-sm">
+        <div class="rajo-panel-title"><i class="bi bi-google me-2 text-primary"></i>Simulação de Mídia Paga (Google Ads)</div>
+        <p class="text-muted small mb-3">Estime o impacto financeiro da lentidão do site nas campanhas de anúncios do cliente. O sistema calculará automaticamente o desperdício com base na pontuação real de <strong>Performance Mobile</strong> obtida na auditoria do PageSpeed.</p>
+        
+        <div class="row g-3">
+          <div class="col-12 col-md-4">
+            <label class="form-label fw-semibold">Nicho do Cliente <span class="text-danger">*</span></label>
+            <select class="form-select" name="ads_nicho" id="ads_nicho" onchange="atualizarCpcSugerido()">
+              <option value="">— selecione o nicho —</option>
+              <option value="advocacia" <?= ($d['ads_nicho'] ?? '') === 'advocacia' ? 'selected' : '' ?>>⚖️ Advocacia / Jurídico</option>
+              <option value="saude" <?= ($d['ads_nicho'] ?? '') === 'saude' ? 'selected' : '' ?>>🩺 Saúde / Clínicas / Dentistas</option>
+              <option value="estetica" <?= ($d['ads_nicho'] ?? '') === 'estetica' ? 'selected' : '' ?>>✨ Embelezamento / Estética</option>
+              <option value="ecommerce" <?= ($d['ads_nicho'] ?? '') === 'ecommerce' ? 'selected' : '' ?>>🛍️ E-commerce / Varejo</option>
+              <option value="educacao" <?= ($d['ads_nicho'] ?? '') === 'educacao' ? 'selected' : '' ?>>🎓 Educação / Cursos</option>
+              <option value="tecnologia" <?= ($d['ads_nicho'] ?? '') === 'tecnologia' ? 'selected' : '' ?>>💻 SaaS / Tecnologia / B2B</option>
+              <option value="imobiliario" <?= ($d['ads_nicho'] ?? '') === 'imobiliario' ? 'selected' : '' ?>>🏠 Imobiliário / Corretores</option>
+              <option value="financas" <?= ($d['ads_nicho'] ?? '') === 'financas' ? 'selected' : '' ?>>💰 Finanças / Investimentos</option>
+              <option value="contabilidade" <?= ($d['ads_nicho'] ?? '') === 'contabilidade' ? 'selected' : '' ?>>📊 Contabilidade / Assessoria</option>
+              <option value="turismo" <?= ($d['ads_nicho'] ?? '') === 'turismo' ? 'selected' : '' ?>>✈️ Turismo / Hotelaria</option>
+              <option value="automotivo" <?= ($d['ads_nicho'] ?? '') === 'automotivo' ? 'selected' : '' ?>>🚗 Automotivo / Concessionárias</option>
+              <option value="gastronomia" <?= ($d['ads_nicho'] ?? '') === 'gastronomia' ? 'selected' : '' ?>>🍕 Gastronomia / Restaurantes</option>
+              <option value="servicos_locais" <?= ($d['ads_nicho'] ?? '') === 'servicos_locais' ? 'selected' : '' ?>>🔑 Serviços Locais (Urgência)</option>
+              <option value="outros" <?= ($d['ads_nicho'] ?? '') === 'outros' ? 'selected' : '' ?>>💼 Serviços Gerais / Outro</option>
+            </select>
+          </div>
+          <div class="col-12 col-md-4">
+            <label class="form-label fw-semibold">Investimento Mensal (R$) <span class="text-danger">*</span></label>
+            <input type="number" step="0.01" min="0" class="form-control" name="ads_investimento" id="ads_investimento"
+                   value="<?= e($d['ads_investimento'] ?? '') ?>" placeholder="Ex.: 3000.00" oninput="calcularDesperdicioAds()">
+          </div>
+          <div class="col-12 col-md-4">
+            <label class="form-label fw-semibold d-flex justify-content-between">
+              <span>CPC Estimado (R$) <span class="text-danger">*</span></span>
+              <span class="badge bg-light text-primary border" id="cpc-suggest-badge" style="font-size: 0.72rem; cursor: pointer;" onclick="atualizarCpcSugerido()">Sugerido: R$ 0,00</span>
+            </label>
+            <input type="number" step="0.01" min="0" class="form-control" name="ads_cpc" id="ads_cpc"
+                   value="<?= e($d['ads_cpc'] ?? '') ?>" placeholder="Ex.: 2.50" oninput="calcularDesperdicioAds()">
+          </div>
+        </div>
+
+        <!-- Card de Preview e Simulação Real-Time -->
+        <div class="mt-4 p-4 rounded-4 text-dark border shadow-sm" id="ads-simulation-preview" style="display:none; background-color: #f8fafc; border-color: #e2e8f0 !important;">
+          <h6 class="fw-bold mb-3 d-flex align-items-center gap-2" style="font-family: var(--font-title); font-size: 0.95rem; color: #1e293b;">
+            <i class="bi bi-calculator text-primary fs-5"></i> Simulação de Desperdício em Tempo Real
+          </h6>
+          
+          <div class="p-3 mb-3 rounded-3 bg-white border" style="border-color: #e2e8f0 !important;">
+            <p class="mb-0 small text-muted" style="line-height: 1.6;">
+              Com base na pontuação de <strong>Performance Mobile real</strong> consolidada no Passo 2 (<strong class="text-primary sim-nota-real">0</strong>/100), estimamos a lentidão e o desperdício das campanhas de tráfego pago:
+            </p>
+          </div>
+
+          <div class="row g-3">
+            <div class="col-6 col-md-3 text-center border-end">
+              <span class="text-muted small d-block mb-1" style="font-size:0.75rem;">Lentidão / Rejeição Est.</span>
+              <strong class="text-danger fs-5 fw-bold" id="sim-perda-porc">0%</strong>
+            </div>
+            <div class="col-6 col-md-3 text-center border-end">
+              <span class="text-muted small d-block mb-1" style="font-size:0.75rem;">Perda Financeira Mensal</span>
+              <strong class="text-danger fs-5 fw-bold" id="sim-perda-financeira">R$ 0,00</strong>
+            </div>
+            <div class="col-6 col-md-3 text-center border-end">
+              <span class="text-muted small d-block mb-1" style="font-size:0.75rem;">Cliques Desperdiçados</span>
+              <strong class="text-danger fs-5 fw-bold" id="sim-cliques-perdidos">0 cliques</strong>
+            </div>
+            <div class="col-6 col-md-3 text-center">
+              <span class="text-muted small d-block mb-1" style="font-size:0.75rem;">Orçamento Aproveitado</span>
+              <strong class="text-success fs-5 fw-bold" id="sim-orc-aproveitado">R$ 0,00</strong>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      
+      <div class="d-flex justify-content-between mt-3">
+        <button type="button" class="btn btn-outline-secondary px-4" onclick="prevStep()">
+          <i class="bi bi-arrow-left me-1"></i> Anterior
+        </button>
+        <button type="button" class="btn btn-primary px-4" onclick="nextStep()">
+          Próximo <i class="bi bi-arrow-right ms-1"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- ══ STEP 5: Problemas Identificados ═══════════════════════ -->
+    <div class="step-panel d-none" id="step5">
       <div class="rajo-panel shadow-sm">
         <div class="rajo-panel-title"><i class="bi bi-exclamation-triangle me-2 text-danger"></i>Problemas Identificados</div>
         <p class="text-muted small mb-3">Estes problemas podem ser <strong>preenchidos 100% de forma automática</strong> pela auditoria do PageSpeed no Passo 1 ou por um dos Modelos Rápidos no topo. Sinta-se livre para editar, adicionar ou excluir itens.</p>
@@ -589,8 +837,8 @@ $acoes = json_decode($d['acoes'] ?? '[]', true) ?: [[
       </div>
     </div>
 
-    <!-- ══ STEP 5: Plano de Ação ══════════════════════════════════ -->
-    <div class="step-panel d-none" id="step5">
+    <!-- ══ STEP 6: Plano de Ação ══════════════════════════════════ -->
+    <div class="step-panel d-none" id="step6">
       <div class="rajo-panel shadow-sm">
         <div class="rajo-panel-title"><i class="bi bi-list-check me-2 text-success"></i>Plano de Ação Recomendado</div>
         <p class="text-muted small mb-3">Este plano de ação pode ser <strong>gerado automaticamente</strong> em conjunto com as auditorias do Passo 1. Edite ou adicione novos prazos e responsáveis conforme a necessidade.</p>
@@ -664,8 +912,8 @@ $acoes = json_decode($d['acoes'] ?? '[]', true) ?: [[
       </div>
     </div>
 
-    <!-- ══ STEP 6: Conclusão ══════════════════════════════════════ -->
-    <div class="step-panel d-none" id="step6">
+    <!-- ══ STEP 7: Conclusão ══════════════════════════════════════ -->
+    <div class="step-panel d-none" id="step7">
       <div class="rajo-panel shadow-sm">
         <div class="rajo-panel-title d-flex justify-content-between align-items-center flex-wrap gap-2">
           <span><i class="bi bi-chat-left-text me-2 text-primary"></i>Conclusão do Relatório</span>
@@ -710,22 +958,33 @@ A Rajo está preparada para executar todas as correções indicadas com agilidad
       </div>
     </div>
 
-    <!-- ══ STEP 7: Revisão & Salvar ═══════════════════════════════ -->
-    <div class="step-panel d-none" id="step7">
+    <!-- ══ STEP 8: Revisão & Salvar ═══════════════════════════════ -->
+    <div class="step-panel d-none" id="step8">
       <div class="rajo-panel">
         <div class="rajo-panel-title"><i class="bi bi-check2-circle me-2"></i>Revisão Final</div>
         <p class="text-muted small mb-3">Verifique os dados antes de salvar. Você pode voltar a qualquer etapa para corrigir.</p>
         <div id="resumoRevisao" class="rajo-resumo"></div>
       </div>
 
+      <?php if (!$pode_emitir): ?>
+      <div id="alertaSalvar" class="alert alert-danger shadow-sm border-0 d-flex align-items-center gap-3 p-4 mb-3" style="border-radius: 16px;">
+        <i class="bi bi-exclamation-octagon-fill fs-3 text-danger"></i>
+        <div>
+          <h6 class="fw-bold mb-1">Saldo Insuficiente para Emissão</h6>
+          <p class="small mb-0 text-muted">Cada novo relatório de diagnóstico custa <strong>R$ <?= number_format($custo_emissao, 2, ',', '.') ?></strong>. Seu saldo atual é de R$ <?= number_format($user_saldo, 2, ',', '.') ?> e você possui <?= $user_bonus ?> bônus grátis.</p>
+          <a href="financeiro.php" class="btn btn-sm btn-danger mt-2 fw-bold px-3 py-1.5" style="border-radius: 8px;"><i class="bi bi-wallet2 me-1"></i> Adicionar Saldo Agora</a>
+        </div>
+      </div>
+      <?php else: ?>
       <div id="alertaSalvar" class="d-none"></div>
+      <?php endif; ?>
 
       <div class="d-flex justify-content-between mt-3 gap-2 flex-wrap">
         <button type="button" class="btn btn-outline-secondary px-4" onclick="prevStep()">
           <i class="bi bi-arrow-left me-1"></i> Anterior
         </button>
         <div class="d-flex gap-2">
-          <button type="button" class="btn btn-success px-4" id="btnSalvar" onclick="salvarRelatorio()">
+          <button type="button" class="btn btn-success px-4" id="btnSalvar" onclick="salvarRelatorio()" <?= !$pode_emitir ? 'disabled' : '' ?>>
             <i class="bi bi-floppy me-1"></i> Salvar Relatório
           </button>
           <a href="visualizar.php?id=<?= $id ?>" id="btnVerOnline" class="btn btn-outline-dark px-4 <?= $id ? '' : 'd-none' ?>" target="_blank">
@@ -774,3 +1033,30 @@ initWizard(1);
 </script>
 </body>
 </html>
+<?php
+/*
+  ============================================================
+  TODO: PROSPECÇÃO ATIVA VIA DISPARO DE WHATSAPP (PARA O FUTURO)
+  ============================================================
+  
+  Objetivo:
+  Permitir que o analista clique em um botão "Enviar Prospecção WhatsApp" no dashboard principal,
+  gerando um link curto dinâmico com mensagem personalizada de alto impacto com base nas métricas.
+  
+  Roteiro de Implementação Futura:
+  1. No painel de administração (admin.php / index.php), ao lado de cada linha de relatório,
+     adicionar um botão com ícone do WhatsApp.
+  2. Ao clicar no botão, disparar um script JS que:
+     a) Pega o nome do cliente, o domínio e os principais problemas identificados (ou a nota de desperdício em Ads).
+     b) Monta uma mensagem customizada:
+        "Olá! Fizemos uma auditoria técnica na página [domínio] e mapeamos que a lentidão mobile está gerando um desperdício de R$ X.XX por mês em Google Ads. Veja o relatório técnico completo em tempo real aqui: https://rajo.com.br/diag-seo/visualizar.php?id=[id]"
+     c) Codifica o texto via encodeURIComponent().
+     d) Abre uma nova aba com o WhatsApp Web: "https://api.whatsapp.com/send?phone=&text=" + mensagem.
+  
+  Métricas Chave de Prospecção a Integrar na Mensagem:
+  - Perda Estimada em Ads (R$ e %)
+  - Nota de Performance Mobile
+  - Total de Falhas Críticas de Segurança Detectadas (SSL, SPF, DMARC ausentes)
+  ============================================================
+*/
+?>
