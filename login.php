@@ -29,7 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($user && password_verify($senha, $user['senha'])) {
                 // Credenciais válidas! Agora verifica se a conta está ativada (dupla confirmação)
-                if ((int)$user['confirmado'] === 0) {
+                if ((int) $user['confirmado'] === 0) {
                     // Reenviar o link de ativação automaticamente
                     $token = bin2hex(random_bytes(32));
                     $expira_em = date('Y-m-d H:i:s', strtotime('+24 hours'));
@@ -37,9 +37,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // Atualizar tokens no banco
                     $upd = db()->prepare("UPDATE usuarios SET token_confirmacao = :token, token_expira = :expira WHERE id = :id");
                     $upd->execute([
-                        ':token'   => $token,
-                        ':expira'  => $expira_em,
-                        ':id'      => $user['id']
+                        ':token' => $token,
+                        ':expira' => $expira_em,
+                        ':id' => $user['id']
                     ]);
 
                     $link_confirmacao = rtrim(APP_URL, '/') . "/confirmar.php?token=" . $token;
@@ -67,7 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $_SESSION['usuario_nome'] = $user['nome'] ?? $user['email'];
                     $_SESSION['usuario_login'] = $user['email'];
                     $_SESSION['usuario_tipo'] = $user['tipo'] ?? 'comum';
-                    
+
                     header('Location: index.php');
                     exit;
                 }
@@ -82,15 +82,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Entrar — <?= APP_NAME ?></title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@300;400;500;600;700;800;900&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css">
+    <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css">
     <style>
         :root {
             --primary-gradient: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
@@ -256,7 +260,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
         }
 
-        .form-control-custom:focus + i.input-icon {
+        .form-control-custom:focus+i.input-icon {
             color: #2563eb;
         }
 
@@ -318,84 +322,91 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     </style>
 </head>
+
 <body>
 
-<div class="login-container">
-    <div class="login-card">
-        <div class="brand-logo-container">
-            <img src="logorajodiag.png" alt="Rajo Diagnóstico" style="height: 50px; width: auto; object-fit: contain;">
+    <div class="login-container">
+        <div class="login-card">
+            <div class="brand-logo-container">
+                <img src="logorajodiag.png" alt="Rajo Diagnóstico"
+                    style="height: 50px; width: auto; object-fit: contain;">
+            </div>
+            <!-- <h4 class="login-title">Rajo Diagnóstico</h4> -->
+            <p class="login-subtitle">Entre com a sua conta de analista</p>
+
+            <?php if ($sucesso !== ''): ?>
+                <div class="alert alert-success border-0 shadow-sm d-flex align-items-center gap-2 p-3 mb-4"
+                    style="border-radius: 12px; background-color: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; font-size: 0.82rem;">
+                    <i class="bi bi-check-circle-fill fs-5 text-success"></i>
+                    <div class="small fw-bold"><?= htmlspecialchars($sucesso) ?></div>
+                </div>
+            <?php endif; ?>
+
+            <?php if ($erro !== ''): ?>
+                <div class="alert-custom alert-danger-custom shadow-sm">
+                    <i class="bi bi-exclamation-circle-fill" style="margin-top:2px;"></i>
+                    <div><?= htmlspecialchars($erro) ?></div>
+                </div>
+            <?php endif; ?>
+
+            <form action="login.php" method="POST" autocomplete="off">
+                <div class="mb-3">
+                    <label for="email" class="form-label">E-mail Comercial</label>
+                    <div class="input-group-custom">
+                        <input type="email" id="email" name="email" class="form-control-custom"
+                            placeholder="exemplo@empresa.com" value="<?= htmlspecialchars($email_digitado) ?>" required
+                            autofocus>
+                        <i class="bi bi-envelope input-icon"></i>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label for="senha" class="form-label">Sua Senha</label>
+                    <div class="input-group-custom">
+                        <input type="password" id="senha" name="senha" class="form-control-custom"
+                            placeholder="Digite sua senha..." required>
+                        <i class="bi bi-lock input-icon"></i>
+                        <button type="button" class="btn-toggle-pass" onclick="toggleSenha(this)"
+                            title="Exibir/ocultar senha">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                    </div>
+                    <div class="d-flex justify-content-end" style="margin-top: -12px; margin-bottom: 15px;">
+                        <a href="recuperar.php"
+                            style="font-size: 0.8rem; color: #2563eb; text-decoration: none; font-weight: 600;">Esqueci
+                            minha senha</a>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-login">
+                    Entrar no Painel <i class="bi bi-arrow-right ms-2"></i>
+                </button>
+            </form>
+
+            <div class="footer-text mt-4">
+                Ainda não tem cadastro comercial? <a href="cadastro.php">Crie uma conta</a>
+            </div>
         </div>
-        <h4 class="login-title">Rajo Diagnóstico</h4>
-        <p class="login-subtitle">Entre com a sua conta SaaS de analista</p>
 
-        <?php if ($sucesso !== ''): ?>
-            <div class="alert alert-success border-0 shadow-sm d-flex align-items-center gap-2 p-3 mb-4" style="border-radius: 12px; background-color: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; font-size: 0.82rem;">
-                <i class="bi bi-check-circle-fill fs-5 text-success"></i>
-                <div class="small fw-bold"><?= htmlspecialchars($sucesso) ?></div>
-            </div>
-        <?php endif; ?>
-
-        <?php if ($erro !== ''): ?>
-            <div class="alert-custom alert-danger-custom shadow-sm">
-                <i class="bi bi-exclamation-circle-fill" style="margin-top:2px;"></i>
-                <div><?= htmlspecialchars($erro) ?></div>
-            </div>
-        <?php endif; ?>
-
-        <form action="login.php" method="POST" autocomplete="off">
-            <div class="mb-3">
-                <label for="email" class="form-label">E-mail Comercial</label>
-                <div class="input-group-custom">
-                    <input type="email" id="email" name="email" 
-                           class="form-control-custom" placeholder="exemplo@empresa.com"
-                           value="<?= htmlspecialchars($email_digitado) ?>" required autofocus>
-                    <i class="bi bi-envelope input-icon"></i>
-                </div>
-            </div>
-
-            <div class="mb-3">
-                <label for="senha" class="form-label">Sua Senha</label>
-                <div class="input-group-custom">
-                    <input type="password" id="senha" name="senha" 
-                           class="form-control-custom" placeholder="Digite sua senha..." required>
-                    <i class="bi bi-lock input-icon"></i>
-                    <button type="button" class="btn-toggle-pass" onclick="toggleSenha(this)" title="Exibir/ocultar senha">
-                        <i class="bi bi-eye"></i>
-                    </button>
-                </div>
-                <div class="d-flex justify-content-end" style="margin-top: -12px; margin-bottom: 15px;">
-                    <a href="recuperar.php" style="font-size: 0.8rem; color: #2563eb; text-decoration: none; font-weight: 600;">Esqueci minha senha</a>
-                </div>
-            </div>
-
-            <button type="submit" class="btn btn-login">
-                Entrar no Painel <i class="bi bi-arrow-right ms-2"></i>
-            </button>
-        </form>
-
-        <div class="footer-text mt-4">
-            Ainda não tem cadastro comercial? <a href="cadastro.php">Crie uma conta</a>
+        <div class="footer-text" style="color: #94a3b8; font-size: 0.75rem;">
+            &copy; <?= date('Y') ?> Rajo Diagnóstico &bull; Todos os direitos reservados.
         </div>
     </div>
-    
-    <div class="footer-text" style="color: #94a3b8; font-size: 0.75rem;">
-        &copy; <?= date('Y') ?> Rajo Diagnóstico &bull; Todos os direitos reservados.
-    </div>
-</div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/js/bootstrap.bundle.min.js"></script>
-<script>
-function toggleSenha(button) {
-    const input = document.getElementById('senha');
-    const icon = button.querySelector('i');
-    if (input.type === 'password') {
-        input.type = 'text';
-        icon.className = 'bi bi-eye-slash';
-    } else {
-        input.type = 'password';
-        icon.className = 'bi bi-eye';
-    }
-}
-</script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/js/bootstrap.bundle.min.js"></script>
+    <script>
+        function toggleSenha(button) {
+            const input = document.getElementById('senha');
+            const icon = button.querySelector('i');
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.className = 'bi bi-eye-slash';
+            } else {
+                input.type = 'password';
+                icon.className = 'bi bi-eye';
+            }
+        }
+    </script>
 </body>
+
 </html>
