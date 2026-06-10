@@ -3,6 +3,15 @@
 //  Rajo Diagnóstico — Configuração
 // ============================================================
 
+// Cabeçalhos de segurança aplicados a toda requisição web (ignorado no CLI):
+// nosniff impede MIME sniffing, SAMEORIGIN bloqueia clickjacking por iframe,
+// e Referrer-Policy evita vazar URLs completas (com tokens) para terceiros.
+if (PHP_SAPI !== 'cli' && !headers_sent()) {
+    header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: SAMEORIGIN');
+    header('Referrer-Policy: strict-origin-when-cross-origin');
+}
+
 // Autoload do Composer para bibliotecas de terceiros (mPDF, PHPMailer)
 if (file_exists(__DIR__ . '/vendor/autoload.php')) {
     require_once __DIR__ . '/vendor/autoload.php';
