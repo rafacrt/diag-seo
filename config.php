@@ -106,6 +106,42 @@ function enviar_email(string $para, string $assunto, string $corpo_html): bool
     }
 }
 
+/**
+ * Monta o HTML de um e-mail transacional com o shell visual padrão do
+ * produto (logo, card centralizado, botão de ação e nota de rodapé).
+ * Centraliza o markup antes duplicado em login/cadastro/recuperar.
+ *
+ * @param string $titulo        Cabeçalho do e-mail (h2)
+ * @param string $corpo_html    Parágrafo de contexto (pode conter <strong>)
+ * @param string $botao_texto   Rótulo do botão de ação
+ * @param string $botao_url     Destino do botão (também exibido como link de fallback)
+ * @param string $rodape_nota   Texto pequeno no rodapé (ex.: validade do link)
+ */
+function email_template(string $titulo, string $corpo_html, string $botao_texto, string $botao_url, string $rodape_nota = ''): string
+{
+    $logo_url = rtrim(APP_URL, '/') . '/logorajodiag.png';
+    $titulo_e = htmlspecialchars($titulo, ENT_QUOTES, 'UTF-8');
+    $botao_e  = htmlspecialchars($botao_texto, ENT_QUOTES, 'UTF-8');
+    $url_e    = htmlspecialchars($botao_url, ENT_QUOTES, 'UTF-8');
+    $rodape   = $rodape_nota !== ''
+        ? '<p style="font-size: 0.72rem; color: #94a3b8; margin-top: 15px;">' . htmlspecialchars($rodape_nota, ENT_QUOTES, 'UTF-8') . '</p>'
+        : '';
+
+    return '
+    <div style="font-family: \'Helvetica Neue\', Helvetica, Arial, sans-serif; background-color: #f8fafc; padding: 40px 20px; color: #334155; line-height: 1.6;">
+        <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; box-shadow: 0 10px 30px rgba(15,23,42,0.05); border: 1px solid #e2e8f0; padding: 40px; text-align: center;">
+            <div style="display: inline-block; margin-bottom: 25px;">
+                <img src="' . $logo_url . '" alt="Rajo Diagnóstico" style="height: 38px; width: auto; max-width: 180px; object-fit: contain;">
+            </div>
+            <h2 style="font-size: 1.4rem; color: #1e293b; font-weight: 700; margin-top: 0; margin-bottom: 12px;">' . $titulo_e . '</h2>
+            <p style="font-size: 0.95rem; color: #64748b; margin-bottom: 30px;">' . $corpo_html . '</p>
+            <a href="' . $url_e . '" style="display: inline-block; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; text-decoration: none; font-weight: 600; font-size: 0.9rem; padding: 12px 30px; border-radius: 10px; box-shadow: 0 8px 16px rgba(37,99,235,0.25);">' . $botao_e . '</a>
+            <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 35px; border-top: 1px solid #f1f5f9; padding-top: 20px;">Se o botão não funcionar, copie e cole o link abaixo no seu navegador:<br><a href="' . $url_e . '" style="color: #2563eb; text-decoration: none; font-size: 0.82rem;">' . $url_e . '</a></p>
+            ' . $rodape . '
+        </div>
+    </div>';
+}
+
 // Configurações de Banco de Dados — credenciais reais em config-local.php
 if (!defined('DB_HOST'))
     define('DB_HOST', 'localhost');

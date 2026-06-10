@@ -82,19 +82,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         // Montar link de confirmação usando a URL do aplicativo
                         $link_confirmacao = rtrim(APP_URL, '/') . "/confirmar.php?token=" . $token;
 
-                        // Corpo do e-mail transacional premium do Resend
+                        // Corpo do e-mail transacional (shell padrão em config.php)
                         $assunto = "Ative sua conta — Rajo Diagnóstico";
-                        $corpo_html = '
-                        <div style="font-family: \'Helvetica Neue\', Helvetica, Arial, sans-serif; background-color: #f8fafc; padding: 40px 20px; color: #334155; line-height: 1.6;">
-                            <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; box-shadow: 0 10px 30px rgba(15,23,42,0.05); border: 1px solid #e2e8f0; padding: 40px; text-align: center;">
-                                <div style="display: inline-block; width: 44px; height: 44px; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; font-weight: 900; font-size: 1.5rem; line-height: 44px; border-radius: 10px; margin-bottom: 20px;">R</div>
-                                <h2 style="font-size: 1.5rem; color: #1e293b; font-weight: 700; margin-top: 0; margin-bottom: 10px;">Ativação de Conta</h2>
-                                <p style="font-size: 0.95rem; color: #64748b; margin-bottom: 30px;">Olá, <strong>' . htmlspecialchars($nome_digitado) . '</strong>! Obrigado por se cadastrar no Rajo Diagnóstico. Por favor, clique no botão abaixo para ativar a sua conta de analista.</p>
-                                <a href="' . $link_confirmacao . '" style="display: inline-block; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; text-decoration: none; font-weight: 600; font-size: 0.9rem; padding: 12px 30px; border-radius: 10px; box-shadow: 0 8px 16px rgba(37,99,235,0.25); transition: background 0.3s ease;">Ativar Minha Conta</a>
-                                <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 35px; border-top: 1px solid #f1f5f9; padding-top: 20px;">Se o botão não funcionar, copie e cole o link no seu navegador:<br><a href="' . $link_confirmacao . '" style="color: #2563eb; text-decoration: none;">' . $link_confirmacao . '</a></p>
-                                <p style="font-size: 0.75rem; color: #94a3b8; margin-top: 15px;">Este link é válido por 24 horas.</p>
-                            </div>
-                        </div>';
+                        $corpo_html = email_template(
+                            'Ativação de Conta',
+                            'Olá, <strong>' . htmlspecialchars($nome_digitado) . '</strong>! Obrigado por se cadastrar no Rajo Diagnóstico. Por favor, clique no botão abaixo para ativar a sua conta de analista.',
+                            'Ativar Minha Conta',
+                            $link_confirmacao,
+                            'Este link é válido por 24 horas.'
+                        );
 
                         // Enviar e-mail de ativação
                         if (enviar_email($email_digitado, $assunto, $corpo_html)) {

@@ -46,21 +46,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Constrói o link de recuperação
                 $link_recuperacao = rtrim(APP_URL, '/') . "/redefinir.php?token=" . $token;
 
-                // Envia o e-mail transacional via Resend
+                // Envia o e-mail transacional via Resend (shell padrão em config.php)
                 $assunto = "Recuperação de Senha — Rajo Diagnóstico";
-                $corpo_html = '
-                <div style="font-family: \'Helvetica Neue\', Helvetica, Arial, sans-serif; background-color: #f8fafc; padding: 40px 20px; color: #334155; line-height: 1.6;">
-                    <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; box-shadow: 0 10px 30px rgba(15,23,42,0.05); border: 1px solid #e2e8f0; padding: 40px; text-align: center;">
-                        <div style="display: inline-block; margin-bottom: 25px;">
-                            <img src="' . rtrim(APP_URL, '/') . '/logorajodiag.png" alt="Rajo Diagnóstico" style="height: 38px; width: auto; max-width: 180px; object-fit: contain;">
-                        </div>
-                        <h2 style="font-size: 1.4rem; color: #1e293b; font-weight: 700; margin-top: 0; margin-bottom: 12px;">Recuperação de Senha</h2>
-                        <p style="font-size: 0.95rem; color: #64748b; margin-bottom: 30px;">Olá, <strong>' . htmlspecialchars($user['nome']) . '</strong>. Recebemos uma solicitação para redefinir a senha da sua conta de analista. Clique no botão abaixo para criar uma nova senha forte.</p>
-                        <a href="' . $link_recuperacao . '" style="display: inline-block; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; text-decoration: none; font-weight: 600; font-size: 0.9rem; padding: 12px 30px; border-radius: 10px; box-shadow: 0 8px 16px rgba(37,99,235,0.25); transition: background 0.3s ease;">Redefinir Minha Senha</a>
-                        <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 35px; border-top: 1px solid #f1f5f9; padding-top: 20px;">Se o botão não funcionar, copie e cole o link abaixo no seu navegador:<br><a href="' . $link_recuperacao . '" style="color: #2563eb; text-decoration: none; font-size: 0.82rem;">' . $link_recuperacao . '</a></p>
-                        <p style="font-size: 0.72rem; color: #94a3b8; margin-top: 15px;">Este link de segurança expira automaticamente em 1 hora.</p>
-                    </div>
-                </div>';
+                $corpo_html = email_template(
+                    'Recuperação de Senha',
+                    'Olá, <strong>' . htmlspecialchars($user['nome']) . '</strong>. Recebemos uma solicitação para redefinir a senha da sua conta de analista. Clique no botão abaixo para criar uma nova senha forte.',
+                    'Redefinir Minha Senha',
+                    $link_recuperacao,
+                    'Este link de segurança expira automaticamente em 1 hora.'
+                );
 
                 enviar_email($user['email'], $assunto, $corpo_html);
             }

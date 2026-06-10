@@ -49,19 +49,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $link_confirmacao = rtrim(APP_URL, '/') . "/confirmar.php?token=" . $token;
 
-                    // Enviar o e-mail via Resend
+                    // Enviar o e-mail via Resend (shell padrão em config.php)
                     $assunto = "Ative sua conta — Rajo Diagnóstico";
-                    $corpo_html = '
-                    <div style="font-family: \'Helvetica Neue\', Helvetica, Arial, sans-serif; background-color: #f8fafc; padding: 40px 20px; color: #334155; line-height: 1.6;">
-                        <div style="max-width: 500px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; box-shadow: 0 10px 30px rgba(15,23,42,0.05); border: 1px solid #e2e8f0; padding: 40px; text-align: center;">
-                            <div style="display: inline-block; width: 44px; height: 44px; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; font-weight: 900; font-size: 1.5rem; line-height: 44px; border-radius: 10px; margin-bottom: 20px;">R</div>
-                            <h2 style="font-size: 1.5rem; color: #1e293b; font-weight: 700; margin-top: 0; margin-bottom: 10px;">Ative sua Conta de Analista</h2>
-                            <p style="font-size: 0.95rem; color: #64748b; margin-bottom: 30px;">Identificamos que você tentou realizar o login, mas sua conta ainda não foi ativada. Clique no botão abaixo para concluir a ativação.</p>
-                            <a href="' . $link_confirmacao . '" style="display: inline-block; background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); color: #ffffff; text-decoration: none; font-weight: 600; font-size: 0.9rem; padding: 12px 30px; border-radius: 10px; box-shadow: 0 8px 16px rgba(37,99,235,0.25); transition: background 0.3s ease;">Ativar Minha Conta</a>
-                            <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 35px; border-top: 1px solid #f1f5f9; padding-top: 20px;">Se o botão não funcionar, copie e cole o link no seu navegador:<br><a href="' . $link_confirmacao . '" style="color: #2563eb; text-decoration: none;">' . $link_confirmacao . '</a></p>
-                            <p style="font-size: 0.75rem; color: #94a3b8; margin-top: 15px;">Este link é válido por 24 horas.</p>
-                        </div>
-                    </div>';
+                    $corpo_html = email_template(
+                        'Ative sua Conta de Analista',
+                        'Identificamos que você tentou realizar o login, mas sua conta ainda não foi ativada. Clique no botão abaixo para concluir a ativação.',
+                        'Ativar Minha Conta',
+                        $link_confirmacao,
+                        'Este link é válido por 24 horas.'
+                    );
 
                     enviar_email($user['email'], $assunto, $corpo_html);
 
