@@ -181,6 +181,32 @@ function getLightTint(string $hex): string {
     return sprintf("#%02x%02x%02x", $mixR, $mixG, $mixB);
 }
 
+/**
+ * Gera um medidor (gauge) semicircular em SVG para uma nota de 0 a 100.
+ * O mPDF renderiza SVG inline, então o gauge sai vetorial e nítido no PDF.
+ */
+function gaugeSvg(int $nota, int $largura = 120): string {
+    $nota = max(0, min(100, $nota));
+    $cor  = $nota >= 90 ? '#2E7D32' : ($nota >= 50 ? '#E65100' : '#D32F2F');
+
+    // Geometria do semicírculo (180°): raio 50, centro em (60,60)
+    $cx = 60; $cy = 60; $raio = 50;
+    $angulo = M_PI * (1 - $nota / 100);           // 180° (esq) → 0° (dir)
+    $ex = $cx + $raio * cos($angulo);
+    $ey = $cy - $raio * sin($angulo);
+    $arcoMaior = 0; // sempre menor que 180°
+
+    // Trilha de fundo (semicírculo cinza completo) + arco colorido do progresso
+    $alturaViewBox = 72;
+    return '<svg width="' . $largura . '" height="' . round($largura * $alturaViewBox / 120)
+        . '" viewBox="0 0 120 ' . $alturaViewBox . '" xmlns="http://www.w3.org/2000/svg">'
+        . '<path d="M 10 60 A 50 50 0 0 1 110 60" fill="none" stroke="#e2e8f0" stroke-width="11" stroke-linecap="round"/>'
+        . '<path d="M 10 60 A 50 50 0 ' . $arcoMaior . ' 1 ' . round($ex, 2) . ' ' . round($ey, 2) . '" '
+        . 'fill="none" stroke="' . $cor . '" stroke-width="11" stroke-linecap="round"/>'
+        . '<text x="60" y="54" text-anchor="middle" font-family="Arial" font-size="26" font-weight="bold" fill="' . $cor . '">' . $nota . '</text>'
+        . '</svg>';
+}
+
 $AZUL  = !empty($r['pdf_cor_tema']) ? $r['pdf_cor_tema'] : '#1A4FBB';
 $AZUL2 = getLightTint($AZUL);
 $CINZA = '#444444';
@@ -790,10 +816,9 @@ if ($resGeral === 'BOM') {
         <p style="font-size:9pt; color:#475569; margin:0; line-height:1.5;"><?= $statusTexto ?></p>
       </td>
       <?php if ($scoreGeral !== null): ?>
-      <td style="border:none; padding:0 0 0 14pt; width:80pt; text-align:center; vertical-align:middle;">
-        <div style="font-size:28pt; font-weight:900; color:<?= corNota((string)$scoreGeral) ?>; line-height:1;"><?= $scoreGeral ?></div>
-        <div style="font-size:7.5pt; color:#718096; text-transform:uppercase; font-weight:bold;">Score Médio</div>
-        <div style="font-size:7pt; color:#a0aec0;">de 100</div>
+      <td style="border:none; padding:0 0 0 14pt; width:96pt; text-align:center; vertical-align:middle;">
+        <?= gaugeSvg((int)$scoreGeral, 96) ?>
+        <div style="font-size:7.5pt; color:#718096; text-transform:uppercase; font-weight:bold; margin-top:1pt;">Score Médio / 100</div>
       </td>
       <?php endif; ?>
     </tr>

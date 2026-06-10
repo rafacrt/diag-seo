@@ -582,6 +582,52 @@ function login_limpar_tentativas(string $email, string $ip): void
     }
 }
 
+// ─── Página de erro amigável ─────────────────────────────────
+
+/**
+ * Renderiza uma página de erro estilizada e encerra a requisição.
+ * Substitui os die() em texto cru por algo com a identidade visual do produto.
+ */
+function pagina_erro(int $codigo, string $titulo, string $mensagem): void
+{
+    http_response_code($codigo);
+    $titulo_e   = htmlspecialchars($titulo, ENT_QUOTES, 'UTF-8');
+    $mensagem_e = htmlspecialchars($mensagem, ENT_QUOTES, 'UTF-8');
+    $logado     = function_exists('esta_logado') && esta_logado();
+    $destino    = $logado ? 'index.php' : 'login.php';
+    $rotulo     = $logado ? 'Voltar ao painel' : 'Ir para o login';
+    echo <<<HTML
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{$titulo_e} — Rajo Diagnóstico</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:'Segoe UI',Arial,sans-serif;background:#0b0f19;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .card{background:rgba(22,28,45,.7);border:1px solid rgba(148,163,184,.15);border-radius:18px;padding:48px 40px;max-width:440px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+  .logo{display:inline-block;width:48px;height:48px;background:linear-gradient(135deg,#1e3c72,#2a5298);color:#fff;font-weight:900;font-size:1.6rem;line-height:48px;border-radius:12px;margin-bottom:24px}
+  .codigo{font-size:3.2rem;font-weight:800;color:#3b82f6;line-height:1;margin-bottom:8px}
+  h1{font-size:1.15rem;font-weight:700;color:#f1f5f9;margin-bottom:12px}
+  p{font-size:.92rem;color:#94a3b8;line-height:1.6;margin-bottom:28px}
+  a{display:inline-block;background:linear-gradient(135deg,#1e3c72,#2a5298);color:#fff;text-decoration:none;font-weight:600;font-size:.9rem;padding:12px 28px;border-radius:10px}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">R</div>
+    <div class="codigo">{$codigo}</div>
+    <h1>{$titulo_e}</h1>
+    <p>{$mensagem_e}</p>
+    <a href="{$destino}">{$rotulo}</a>
+  </div>
+</body>
+</html>
+HTML;
+    exit;
+}
+
 // ─── Controle de acesso a relatórios ─────────────────────────
 
 /**
@@ -600,8 +646,7 @@ function carregar_relatorio_autorizado(): array
         $stmt->execute([$token]);
         $r = $stmt->fetch();
         if (!$r) {
-            http_response_code(404);
-            die('Relatório não encontrado ou link inválido.');
+            pagina_erro(404, 'Relatório não encontrado', 'Este link de relatório é inválido ou expirou. Solicite um novo link ao responsável pela auditoria.');
         }
         return [$r, true];
     }
@@ -611,21 +656,18 @@ function carregar_relatorio_autorizado(): array
 
     $id = (int) ($_GET['id'] ?? 0);
     if (!$id) {
-        http_response_code(400);
-        die('ID do relatório inválido.');
+        pagina_erro(400, 'Requisição inválida', 'O identificador do relatório não foi informado corretamente.');
     }
 
     $stmt = db()->prepare('SELECT * FROM relatorios WHERE id = ?');
     $stmt->execute([$id]);
     $r = $stmt->fetch();
     if (!$r) {
-        http_response_code(404);
-        die('Relatório não encontrado.');
+        pagina_erro(404, 'Relatório não encontrado', 'O relatório solicitado não existe ou foi removido.');
     }
 
     if (!e_master() && (int) ($r['usuario_id'] ?? 0) !== (int) $_SESSION['usuario_id']) {
-        http_response_code(403);
-        die('Acesso negado. Este relatório pertence a outro analista.');
+        pagina_erro(403, 'Acesso negado', 'Este relatório pertence a outro analista e não pode ser acessado pela sua conta.');
     }
 
     return [$r, false];
