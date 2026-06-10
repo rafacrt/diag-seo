@@ -1,20 +1,9 @@
 <?php
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/auth.php';
 
-$id = (int)($_GET['id'] ?? 0);
-if (!$id) {
-    http_response_code(400);
-    die('ID do relatório inválido.');
-}
-
-$stmt = db()->prepare('SELECT * FROM relatorios WHERE id = ?');
-$stmt->execute([$id]);
-$r = $stmt->fetch();
-
-if (!$r) {
-    http_response_code(404);
-    die('Relatório de diagnóstico não encontrado.');
-}
+// Acesso: analista logado (dono ou master) via ?id=, ou cliente final via ?t=TOKEN
+[$r, $acesso_publico] = carregar_relatorio_autorizado();
 
 $problemas = json_decode($r['problemas'] ?? '[]', true) ?: [];
 $acoes     = json_decode($r['acoes']     ?? '[]', true) ?: [];
@@ -24,7 +13,8 @@ if (!in_array($tipo_relatorio, ['completo', 'compacto'])) {
     $tipo_relatorio = 'completo';
 }
 
-$plano_get = $_GET['plano'] ?? null;
+// O override via GET (?plano=) só vale para o analista logado.
+$plano_get = $acesso_publico ? null : ($_GET['plano'] ?? null);
 if ($plano_get === 'oculto') {
     $bloquear_plano = 1;
 } elseif ($plano_get === 'liberado') {
@@ -282,7 +272,16 @@ $primaryColor = !empty($r['pdf_cor_tema']) ? $r['pdf_cor_tema'] : '#3b82f6';
         <span class="badge bg-secondary-subtle text-white border border-secondary-subtle px-3 py-2 fw-semibold d-none d-md-inline-block" style="border-radius: 30px; font-size: 0.75rem;">
           AVALIAÇÃO GERAL: <strong class="text-<?= strtolower($r['resultado_geral']) === 'bom' ? 'success' : (strtolower($r['resultado_geral']) === 'médio' ? 'warning' : 'danger') ?>"><?= $r['resultado_geral'] ?></strong>
         </span>
-        <a href="pdf.php?id=<?= $id ?>&formato=<?= $tipo_relatorio ?>&plano=<?= $bloquear_plano === 1 ? 'oculto' : 'liberado' ?>" target="_blank" class="btn btn-primary d-inline-flex align-items-center gap-2 fw-bold" style="border-radius: 30px; padding: 8px 20px; font-size: 0.85rem;">
+        <?php
+        // Mantém o mesmo modo de acesso no link do PDF: token público para o
+        // cliente final, ou id + plano para o analista logado.
+        if ($acesso_publico) {
+            $pdf_href = 'pdf.php?t=' . urlencode($r['token_publico']) . '&formato=' . $tipo_relatorio;
+        } else {
+            $pdf_href = 'pdf.php?id=' . (int)$r['id'] . '&formato=' . $tipo_relatorio . '&plano=' . ($bloquear_plano === 1 ? 'oculto' : 'liberado');
+        }
+        ?>
+        <a href="<?= htmlspecialchars($pdf_href) ?>" target="_blank" class="btn btn-primary d-inline-flex align-items-center gap-2 fw-bold" style="border-radius: 30px; padding: 8px 20px; font-size: 0.85rem;">
           <i class="bi bi-file-earmark-pdf-fill"></i> Baixar PDF
         </a>
       </div>

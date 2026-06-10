@@ -2,6 +2,9 @@
 // ============================================================
 //  Rajo Diagnóstico — Rastreador & Auditor de SEO Profundo (cURL Multi)
 // ============================================================
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/auth.php';
+exigir_login(); // Ferramenta interna: nunca expor o crawler a visitantes anônimos
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -23,11 +26,35 @@ $host = $parsedUrl['host'] ?? '';
 $scheme = $parsedUrl['scheme'] ?? 'https';
 $baseUrl = $scheme . '://' . $host;
 
+// ── Proteção SSRF ───────────────────────────────────────────
+// Impede que o crawler seja usado para escanear a rede interna do
+// servidor (localhost, 192.168.x, 10.x, metadados de cloud etc.)
+function ip_e_privado(string $ip): bool
+{
+    return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
+}
+
+if ($host === '' || filter_var($host, FILTER_VALIDATE_IP) !== false && ip_e_privado($host)) {
+    http_response_code(400);
+    echo json_encode(['ok' => false, 'msg' => 'Endereço de destino não permitido.']);
+    exit;
+}
+$ips_resolvidos = gethostbynamel($host) ?: [];
+foreach ($ips_resolvidos as $ip_resolvido) {
+    if (ip_e_privado($ip_resolvido)) {
+        http_response_code(400);
+        echo json_encode(['ok' => false, 'msg' => 'O domínio informado aponta para um endereço interno e não pode ser auditado.']);
+        exit;
+    }
+}
+
 // ─── Passo 1: Busca a página inicial para mapear links e pixels ────────
 $responseHeaders = [];
 $ch = curl_init();
 curl_setopt($ch, CURLOPT_URL, $url);
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
 curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
 curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
 curl_setopt($ch, CURLOPT_TIMEOUT, 6);
@@ -58,6 +85,8 @@ if ($homepageHtml === false || $httpCode >= 400) {
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $urlHttp);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 5);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
@@ -246,6 +275,8 @@ foreach ($internalUrls as $crawlUrl) {
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $crawlUrl);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     curl_setopt($ch, CURLOPT_MAXREDIRS, 2);
     curl_setopt($ch, CURLOPT_TIMEOUT, 4); // Timeout ágil por página

@@ -78,6 +78,18 @@ try {
     $auditoria_seguranca = isset($_POST['auditoria_seguranca_b64']) ? base64_decode($_POST['auditoria_seguranca_b64']) : ($_POST['auditoria_seguranca'] ?? null);
     $auditoria_dns = isset($_POST['auditoria_dns_b64']) ? base64_decode($_POST['auditoria_dns_b64']) : ($_POST['auditoria_dns'] ?? null);
     $screenshot_path = isset($_POST['screenshot_path_b64']) ? base64_decode($_POST['screenshot_path_b64']) : ($_POST['screenshot_path'] ?? null);
+
+    // Sanitiza o caminho do screenshot: este valor é aberto pelo mPDF no servidor,
+    // então não pode conter path traversal, caminhos absolutos ou extensão não-imagem
+    if ($screenshot_path !== null && trim($screenshot_path) !== '') {
+        $screenshot_path = str_replace('\\', '/', trim($screenshot_path));
+        $eh_relativa  = $screenshot_path[0] !== '/' && !preg_match('/^[A-Za-z]:/', $screenshot_path);
+        $sem_travessia = !str_contains($screenshot_path, '..');
+        $eh_imagem    = (bool) preg_match('/\.(png|jpe?g|webp|gif)$/i', $screenshot_path);
+        if (!$eh_relativa || !$sem_travessia || !$eh_imagem) {
+            $screenshot_path = null;
+        }
+    }
     
     $ads_nicho = isset($_POST['ads_nicho_b64']) ? base64_decode($_POST['ads_nicho_b64']) : ($_POST['ads_nicho'] ?? null);
 
@@ -188,6 +200,9 @@ try {
         $stmt->execute($campos);
         $newId = $id;
     } else {
+        // Novo relatório recebe um token público aleatório para o link de compartilhamento
+        $campos['token_publico'] = bin2hex(random_bytes(24));
+
         $cols = implode(', ', array_map(fn($k) => "`$k`", array_keys($campos)));
         $vals = implode(', ', array_map(fn($k) => ":$k", array_keys($campos)));
         $sql  = "INSERT INTO relatorios ($cols) VALUES ($vals)";

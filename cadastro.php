@@ -57,8 +57,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // Gravar usuário no banco. Se a constante exigir ativação for false, cria já confirmado.
                     $confirmado_inicial = defined('EXIGIR_ATIVACAO_EMAIL') && !EXIGIR_ATIVACAO_EMAIL ? 1 : 0;
 
-                    $ins = db()->prepare("INSERT INTO usuarios (nome, email, senha, confirmado, token_confirmacao, token_expira) 
-                                           VALUES (:nome, :email, :senha, :confirmado, :token, :expira)");
+                    $ins = db()->prepare("INSERT INTO usuarios (nome, email, senha, confirmado, token_confirmacao, token_expira, bonus_relatorios) 
+                                           VALUES (:nome, :email, :senha, :confirmado, :token, :expira, 5)");
                     $ins->execute([
                         ':nome' => $nome_digitado,
                         ':email' => $email_digitado,
@@ -67,6 +67,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':token' => $confirmado_inicial ? null : $token,
                         ':expira' => $confirmado_inicial ? null : $expira_em
                     ]);
+
+                    $usuario_id = db()->lastInsertId();
+
+                    // Registrar transação de bônus de boas-vindas no extrato
+                    $stmt_log = db()->prepare("INSERT INTO transacoes (usuario_id, tipo, valor, descricao, status) VALUES (?, 'bonus', 0.00, ?, 'concluido')");
+                    $stmt_log->execute([$usuario_id, "Bônus de boas-vindas: 5 relatórios grátis"]);
 
                     if ($confirmado_inicial) {
                         $sucesso = 'Cadastro realizado e ativado com sucesso! Você já pode realizar o login na tela abaixo.';

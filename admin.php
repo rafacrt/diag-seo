@@ -28,6 +28,7 @@ $meu_id = (int)$_SESSION['usuario_id'];
 
 // ─── PROCESSAMENTO DE AÇÕES VIA POST ─────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    csrf_validar(); // Bloqueia requisições forjadas contra o painel master
     $acao = $_POST['acao'] ?? '';
 
     try {
@@ -478,6 +479,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
                     <div class="rajo-panel border-0 shadow-sm p-4 bg-white" style="border-radius: 16px;">
                         <h6 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-megaphone-fill text-primary me-2"></i>Publicar Aviso Global</h6>
                         <form action="admin.php" method="POST">
+                        <?= csrf_campo() ?>
                             <input type="hidden" name="aba" value="avisos">
                             <input type="hidden" name="acao" value="criar_aviso">
                             
@@ -549,6 +551,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
                                             </td>
                                             <td>
                                                 <form action="admin.php" method="POST" class="d-inline">
+                        <?= csrf_campo() ?>
                                                     <input type="hidden" name="aba" value="avisos">
                                                     <input type="hidden" name="acao" value="alterar_status_aviso">
                                                     <input type="hidden" name="aviso_id" value="<?= $a['id'] ?>">
@@ -565,6 +568,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
                                             <td class="text-muted font-monospace" style="font-size: 0.78rem;"><?= date('d/m/Y H:i', strtotime($a['criado_em'])) ?></td>
                                             <td class="text-end pe-3">
                                                 <form action="admin.php" method="POST" onsubmit="return confirm('Deseja realmente remover esta notificação global do sistema?')" class="d-inline">
+                        <?= csrf_campo() ?>
                                                     <input type="hidden" name="aba" value="avisos">
                                                     <input type="hidden" name="acao" value="excluir_aviso">
                                                     <input type="hidden" name="aviso_id" value="<?= $a['id'] ?>">
@@ -593,6 +597,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
                     <div class="rajo-panel border-0 shadow-sm p-4 bg-white" style="border-radius: 16px;">
                         <h6 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-gear-fill text-primary me-2"></i>Custo Global do Relatório</h6>
                         <form action="admin.php" method="POST">
+                        <?= csrf_campo() ?>
                                                             <input type="hidden" name="aba" value="financeiro">
                                                             <input type="hidden" name="acao" value="atualizar_custo_padrao">
                             
@@ -644,6 +649,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
                                             <td class="text-end pe-3">
                                                 <div class="d-flex justify-content-end gap-2">
                                                     <form action="admin.php" method="POST" class="d-inline" onsubmit="return confirm('Deseja realmente APROVAR esta recarga e creditar o saldo na conta do analista?')">
+                        <?= csrf_campo() ?>
                                                         <input type="hidden" name="aba" value="financeiro">
                                                         <input type="hidden" name="acao" value="aprovar_recarga">
                                                         <input type="hidden" name="transacao_id" value="<?= $t['id'] ?>">
@@ -652,6 +658,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
                                                         </button>
                                                     </form>
                                                     <form action="admin.php" method="POST" class="d-inline" onsubmit="return confirm('Deseja REJEITAR esta solicitação de recarga?')">
+                        <?= csrf_campo() ?>
                                                         <input type="hidden" name="aba" value="financeiro">
                                                         <input type="hidden" name="acao" value="rejeitar_recarga">
                                                         <input type="hidden" name="transacao_id" value="<?= $t['id'] ?>">
@@ -746,6 +753,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
                     <div class="rajo-panel border-0 shadow-sm p-4 bg-white" style="border-radius: 16px;">
                         <h6 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-tag-fill text-primary me-2"></i>Criar Novo Cupom</h6>
                         <form action="admin.php" method="POST">
+                        <?= csrf_campo() ?>
                             <input type="hidden" name="aba" value="cupons">
                             <input type="hidden" name="acao" value="criar_cupom">
                             
@@ -817,6 +825,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
                                             <td class="text-muted font-monospace" style="font-size: 0.78rem;"><?= date('d/m/Y H:i', strtotime($c['criado_em'])) ?></td>
                                             <td class="text-end pe-3">
                                                 <form action="admin.php" method="POST" onsubmit="return confirm('Deseja realmente remover este cupom de desconto?')" class="d-inline">
+                        <?= csrf_campo() ?>
                                                     <input type="hidden" name="aba" value="cupons">
                                                     <input type="hidden" name="acao" value="excluir_cupom">
                                                     <input type="hidden" name="cupom_id" value="<?= $c['id'] ?>">
@@ -845,6 +854,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow" style="border-radius: 16px;">
       <form action="admin.php" method="POST">
+                        <?= csrf_campo() ?>
         <input type="hidden" name="aba" value="financeiro">
         <input type="hidden" name="acao" value="atualizar_financeiro_usuario">
         <input type="hidden" name="usuario_id" id="fin_usuario_id">
@@ -889,6 +899,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
   <div class="modal-dialog modal-dialog-centered modal-sm">
     <div class="modal-content border-0 shadow" style="border-radius: 16px;">
       <form action="admin.php" method="POST">
+                        <?= csrf_campo() ?>
         <input type="hidden" name="aba" value="usuarios">
         <input type="hidden" name="acao" value="atualizar_tipo">
         <input type="hidden" name="usuario_id" id="tipo_usuario_id">
@@ -918,6 +929,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content border-0 shadow" style="border-radius: 16px;">
       <form action="admin.php" method="POST" autocomplete="off" onsubmit="return validarSenhaReset(event)">
+                        <?= csrf_campo() ?>
         <input type="hidden" name="aba" value="usuarios">
         <input type="hidden" name="acao" value="resetar_senha">
         <input type="hidden" name="usuario_id" id="senha_usuario_id">
@@ -970,6 +982,7 @@ $transacoes_pendentes = db()->query("SELECT t.id, t.usuario_id, t.valor, t.descr
   <div class="modal-dialog modal-dialog-centered modal-sm">
     <div class="modal-content border-0 shadow" style="border-radius: 16px;">
       <form action="admin.php" method="POST">
+                        <?= csrf_campo() ?>
         <input type="hidden" name="aba" value="usuarios">
         <input type="hidden" name="acao" value="excluir_usuario">
         <input type="hidden" name="usuario_id" id="excluir_usuario_id">

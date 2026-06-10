@@ -1,14 +1,10 @@
 <?php
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/vendor/autoload.php';
 
-$id = (int)($_GET['id'] ?? 0);
-if (!$id) { http_response_code(400); die('ID inválido'); }
-
-$stmt = db()->prepare('SELECT * FROM relatorios WHERE id = ?');
-$stmt->execute([$id]);
-$r = $stmt->fetch();
-if (!$r) { http_response_code(404); die('Relatório não encontrado'); }
+// Acesso: analista logado (dono ou master) via ?id=, ou cliente final via ?t=TOKEN
+[$r, $acesso_publico] = carregar_relatorio_autorizado();
 
 $problemas = json_decode($r['problemas'] ?? '[]', true) ?: [];
 $acoes     = json_decode($r['acoes']     ?? '[]', true) ?: [];
@@ -86,15 +82,15 @@ function cwv_val(string $v): string {
 function deveExibirLinha(string $desk, string $mob, bool $isGtmetrix = false): bool {
     $d = trim($desk);
     $m = trim($mob);
-    
+
     if ($isGtmetrix) {
         if ($d === '' || $d === '–') return false;
         return strtolower($d) !== 'a';
     }
-    
+
     $deskBad = ($d !== '' && $d !== '–' && is_numeric($d) && (int)$d < 85);
     $mobBad  = ($m !== '' && $m !== '–' && is_numeric($m) && (int)$m < 85);
-    
+
     return $deskBad || $mobBad;
 }
 
@@ -111,8 +107,7 @@ function ofuscarAcao(string $texto, bool $bloquear): string {
 
 function formatarProblema(string $texto, bool $bloquear): string {
     if (!$bloquear) return htmlspecialchars($texto);
-    
-    // Mapeamento dinâmico para tom técnico extremamente premium e dependente dos serviços da Rajo
+
     $mapeamento = [
         'imagens sem atributo descritivo alt' => 'Inconformidade em tags de imagem (ausência de metadados ALT descritivos)',
         'imagens no site sem a propriedade alt' => 'Inconformidade em tags de imagem (ausência de metadados ALT descritivos)',
@@ -125,22 +120,48 @@ function formatarProblema(string $texto, bool $bloquear): string {
         'instabilidade visual de layout severa (layout shift)' => 'Déficit na estabilidade cumulativa do layout (CLS) com deslocamento dinâmico do DOM',
         'excesso de processamento da linha de execução principal' => 'Bloqueio severo na linha de execução principal (Main-Thread Block) por scripts terceiros',
     ];
-    
+
     $textoLower = mb_strtolower(trim($texto));
     $textoFormatado = $texto;
-    
+
     foreach ($mapeamento as $chave => $substituto) {
         if (str_contains($textoLower, $chave)) {
             $textoFormatado = $substituto;
             break;
         }
     }
-    
-    // Oculta trechos de localização para criar dependência profissional
+
     $partes = explode('. ', $textoFormatado);
     $principal = $partes[0];
-    
+
     return $principal . " <span style='background-color:#555;color:#555;border-radius:2px;font-family:monospace;padding:0 3px;'>████████████████████</span>";
+}
+
+// Traduz problema técnico para linguagem de negócio
+function impactoNegocio(string $problema, string $impacto): string {
+    $p = mb_strtolower($problema);
+    if (str_contains($p, 'performance') || str_contains($p, 'lento') || str_contains($p, 'velocidade') || str_contains($p, 'ttfb') || str_contains($p, 'carregamento')) {
+        return 'Visitantes abandonam o site antes de ver sua oferta, desperdiçando investimento em anúncios.';
+    }
+    if (str_contains($p, 'meta') || str_contains($p, 'seo') || str_contains($p, 'title') || str_contains($p, 'description')) {
+        return 'O Google não consegue entender seu site corretamente, reduzindo sua visibilidade nas buscas.';
+    }
+    if (str_contains($p, 'analytics') || str_contains($p, 'gtm') || str_contains($p, 'tag manager')) {
+        return 'Sem dados de conversão, é impossível medir o retorno real dos seus anúncios.';
+    }
+    if (str_contains($p, 'pixel') || str_contains($p, 'facebook') || str_contains($p, 'remarketing')) {
+        return 'Você perde a capacidade de impactar novamente visitantes que não converteram.';
+    }
+    if (str_contains($p, 'ssl') || str_contains($p, 'https') || str_contains($p, 'segurança')) {
+        return 'Visitantes veem alertas de segurança e desconfiam do site, prejudicando conversões.';
+    }
+    if (str_contains($p, 'mobile') || str_contains($p, 'responsivo') || str_contains($p, 'celular')) {
+        return 'Mais de 70% das visitas vêm do celular — problemas móveis afetam a maioria dos seus clientes.';
+    }
+    if (str_contains($p, 'layout shift') || str_contains($p, 'cls')) {
+        return 'O conteúdo se move durante o carregamento, frustrando o usuário e aumentando a rejeição.';
+    }
+    return !empty($impacto) ? htmlspecialchars($impacto) : 'Prejudica a experiência do usuário e o desempenho nas buscas.';
 }
 
 function getLightTint(string $hex): string {
@@ -152,12 +173,11 @@ function getLightTint(string $hex): string {
     $r = hexdec(substr($hex, 0, 2));
     $g = hexdec(substr($hex, 2, 2));
     $b = hexdec(substr($hex, 4, 2));
-    
-    // blend with white (90% white, 10% color)
+
     $mixR = round($r * 0.1 + 255 * 0.9);
     $mixG = round($g * 0.1 + 255 * 0.9);
     $mixB = round($b * 0.1 + 255 * 0.9);
-    
+
     return sprintf("#%02x%02x%02x", $mixR, $mixG, $mixB);
 }
 
@@ -170,7 +190,9 @@ if (!in_array($tipo_relatorio, ['completo', 'compacto'])) {
     $tipo_relatorio = 'completo';
 }
 
-$plano_get = $_GET['plano'] ?? null;
+// O override via GET (?plano=) só vale para o analista logado.
+// Quem acessa pelo link público recebe sempre a configuração salva no relatório.
+$plano_get = $acesso_publico ? null : ($_GET['plano'] ?? null);
 if ($plano_get === 'oculto') {
     $bloquear = true;
 } elseif ($plano_get === 'liberado') {
@@ -180,385 +202,433 @@ if ($plano_get === 'oculto') {
 }
 
 if ($tipo_relatorio === 'compacto') {
-    // RENDERIZA O RELATÓRIO COMPACTO DE 1 PÁGINA
-    ob_start();
-    ?>
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-    <meta charset="UTF-8">
-    <style>
-      * { margin:0; padding:0; box-sizing:border-box; }
-      body { font-family: Arial, sans-serif; font-size:8pt; color:#1e293b; line-height:1.35; background-color:#fff; }
-      
-      /* Cabeçalho Luxuoso Compacto */
-      .header-compact { border-bottom:3.5px solid <?= $AZUL ?>; padding-bottom:6pt; margin-bottom:8pt; }
-      .header-table { width:100%; border:none; margin:0; }
-      .header-table td { border:none; padding:0; vertical-align:middle; }
-      .header-logo { font-size:22pt; font-weight:900; color:<?= $AZUL ?>; letter-spacing:2px; text-transform:uppercase; font-family:'Outfit', sans-serif; }
-      .header-meta { font-size:7.5pt; color:#475569; text-align:right; font-weight:500; }
-      
-      .title-banner { background:<?= $AZUL ?>; color:#fff; padding:7pt 12pt; border-radius:8px; margin-bottom:8pt; text-align:center; font-family:'Outfit', sans-serif; }
-      .title-banner h1 { font-size:11.8pt; font-weight:bold; text-transform:uppercase; letter-spacing:1px; margin:0; padding:0; border:none; color:#fff; }
-      
-      /* Grades compactas */
-      .grid-table { width:100%; border:none; margin-bottom:6pt; }
-      .grid-table td { border:none; padding:0; vertical-align:top; }
-      
-      /* Painéis Modernos */
-      .panel-compact { border:1px solid #e2e8f0; border-radius:8px; padding:7pt 9pt; background-color:#f8fafc; margin-bottom:6pt; }
-      .panel-title { font-size:9pt; font-weight:bold; color:<?= $AZUL ?>; margin-bottom:4pt; border-bottom:1.5px solid #e2e8f0; padding-bottom:3pt; text-transform:uppercase; letter-spacing:0.5px; }
-      
-      /* Tabelas ultra-compactas */
-      table { width:100%; border-collapse:collapse; margin-bottom:0pt; }
-      th, td { padding:3.5pt 4.5pt; border:1px solid #e2e8f0; font-size:7.5pt; text-align:left; color:#334155; }
-      thead th { background:<?= $AZUL ?>; color:#fff; font-weight:bold; font-size:7.5pt; border:1px solid <?= $AZUL ?>; text-transform:uppercase; }
-      
-      .badge-std { display:inline-block; padding:1.5pt 3pt; border-radius:4px; font-size:6.8pt; font-weight:bold; text-align:center; }
-      .badge-ok { background-color:#dcfce7; color:#166534; border:1px solid #bbf7d0; }
-      .badge-warn { background-color:#fef3c7; color:#9a3412; border:1px solid #fde68a; }
-      .badge-danger { background-color:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }
-      
-      .text-bold { font-weight:bold; color:#0f172a; }
-      .font-mono { font-family:monospace; font-size:7pt; }
-    </style>
-    </head>
-    <body>
-    
-    <!-- HEADER -->
-    <div class="header-compact">
-      <table class="header-table">
-        <tr>
-          <td>
-            <?php if (!empty($r['logo_cliente'])): ?>
-              <img src="<?= htmlspecialchars($r['logo_cliente']) ?>" style="max-height:22pt; max-width:120pt;" />
-            <?php else: ?>
-              <div class="header-logo">RAJO</div>
-            <?php endif; ?>
-          </td>
-          <td class="header-meta">
-            <strong>DIAGNÓSTICO TÉCNICO COMPACTO</strong><br>
-            Cliente: <?= htmlspecialchars($r['cliente']) ?><br>
-            Domínio: <?= htmlspecialchars($r['dominio']) ?><br>
-            Data: <?= date('d/m/Y', strtotime($r['data_relatorio'])) ?>
-          </td>
-        </tr>
-      </table>
-    </div>
-    
-    <!-- BANNER TÍTULO -->
-    <div class="title-banner">
-      <h1>Relatório Executivo de Auditoria & Otimização Web</h1>
-    </div>
-    
-    <!-- GRID 1: NOTAS E INFRAESTRUTURA -->
-    <table class="grid-table" style="margin-bottom:4pt;">
-      <tr>
-        <!-- Seção de Pontuações -->
-        <td style="width:49%; padding-right:5pt;">
-          <div class="panel-compact" style="height:190pt;">
-            <div class="panel-title">Pontuações de Auditoria</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>Métrica / Categoria</th>
-                  <th align="center">Desktop</th>
-                  <th align="center">Mobile</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td class="text-bold">Performance Geral</td>
-                  <?= score_cell($r['ps_performance_desktop']) ?>
-                  <?= score_cell($r['ps_performance_mobile']) ?>
-                </tr>
-                <tr>
-                  <td class="text-bold">SEO Técnico On-Page</td>
-                  <?= score_cell($r['ps_seo_desktop']) ?>
-                  <?= score_cell($r['ps_seo_mobile']) ?>
-                </tr>
-                <tr>
-                  <td class="text-bold">Melhores Práticas Web</td>
-                  <?= score_cell($r['ps_boaspraticas_desktop']) ?>
-                  <?= score_cell($r['ps_boaspraticas_mobile']) ?>
-                </tr>
-                <tr>
-                  <td class="text-bold">Acessibilidade Geral</td>
-                  <?= score_cell($r['ps_acessibilidade_desktop']) ?>
-                  <?= score_cell($r['ps_acessibilidade_mobile']) ?>
-                </tr>
-                <?php if ($r['gtm_nota']): ?>
-                <tr>
-                  <td class="text-bold">Performance GTmetrix</td>
-                  <td align="center" colspan="2" bgcolor="<?= bgNota($r['gtm_nota']) ?>" style="color:<?= corNota($r['gtm_nota']) ?>; font-weight:bold;"><?= htmlspecialchars($r['gtm_nota']) ?></td>
-                </tr>
-                <?php endif; ?>
-              </tbody>
-            </table>
-            
-            <div style="margin-top:5pt; font-size:7pt; color:#475569;">
-              <strong>Resultado Geral da Auditoria:</strong> 
-              <span class="badge-std badge-<?= $r['resultado_geral'] === 'BOM' ? 'ok' : ($r['resultado_geral'] === 'MÉDIO' ? 'warn' : 'danger') ?>" style="padding:1pt 4pt; font-size:7.5pt; text-transform:uppercase;">
-                <?= htmlspecialchars($r['resultado_geral']) ?>
-              </span>
-            </div>
-            
-            <?php
-            $inv = (float)($r['ads_investimento'] ?? 0);
-            $cpc = (float)($r['ads_cpc'] ?? 0);
-            if ($inv > 0 && $cpc > 0):
-                $P = (int)($r['ps_performance_mobile'] ?? 35);
-                if ($P >= 90) {
-                    $D = 3;
-                } else if ($P >= 50) {
-                    $D = 30 - 0.3 * $P;
-                } else {
-                    $D = 65 - 0.7 * $P;
-                }
-                $D = max(0, min(100, $D));
-                $prejuizo = $inv * ($D / 100);
-                $cliquesPerdidos = $cpc > 0 ? round($prejuizo / $cpc) : 0;
-            ?>
-              <div style="margin-top:5pt; border-top:1px dashed #cbd5e1; padding-top:3.5pt; font-size:6.6pt; color:#581c87; line-height:1.25;">
-                <strong>Perda Estimada em Google Ads:</strong><br>
-                Lentidão móvel gera <strong><?= round($D) ?>% de desperdício</strong>. <span style="color:#b91c1c; font-weight:bold;">Perda: R$ <?= number_format($prejuizo, 2, ',', '.') ?>/mês</span> (≈<?= $cliquesPerdidos ?> cliques perdidos).
-              </div>
-            <?php endif; ?>
-          </div>
-        </td>
-        
-        <!-- Seção de Infraestrutura e Segurança -->
-        <td style="width:51%; padding-left:5pt;">
-          <div class="panel-compact" style="height:190pt;">
-            <div class="panel-title">Infraestrutura & Segurança</div>
-            
-            <!-- CMS -->
-            <div style="margin-bottom:3.5pt; border-bottom:1px dashed #e2e8f0; padding-bottom:3.5pt; font-size:7.5pt;">
-              <strong>Plataforma CMS:</strong> 
-              <span class="badge-std <?= ($r['auditoria_cms'] ?? 'Não Identificado') !== 'Não Identificado' ? 'badge-ok' : 'badge-warn' ?>">
-                <?= htmlspecialchars($r['auditoria_cms'] ?? 'Não Identificado') ?>
-              </span>
-            </div>
-            
-            <!-- IP/Hospedagem -->
-            <?php
-            $geo = !empty($r['auditoria_hospedagem']) ? json_decode($r['auditoria_hospedagem'], true) : null;
-            ?>
-            <div style="margin-bottom:3.5pt; border-bottom:1px dashed #e2e8f0; padding-bottom:3.5pt; font-size:7.2pt;">
-              <strong>Hospedagem:</strong> 
-              <?php if ($geo): ?>
-                <span class="text-bold"><?= htmlspecialchars($geo['provedor']) ?></span> <span style="color:#718096; font-size:6.8pt;">(<?= htmlspecialchars($geo['pais']) ?>)</span>
-              <?php else: ?>
-                <span class="text-muted">Não Auditada</span>
-              <?php endif; ?>
-            </div>
-            
-            <!-- Segurança HTTP & SSL -->
-            <?php
-            $seg = !empty($r['auditoria_seguranca']) ? json_decode($r['auditoria_seguranca'], true) : null;
-            ?>
-            <div style="margin-bottom:3.5pt; border-bottom:1px dashed #e2e8f0; padding-bottom:3.5pt; font-size:7.2pt;">
-              <strong>SSL / HTTPS:</strong> 
-              <?php if ($seg): ?>
-                <span class="badge-std <?= $seg['ssl_ativo'] ? 'badge-ok' : 'badge-danger' ?>"><?= $seg['ssl_ativo'] ? '✓ Ativo' : '✗ Inativo' ?></span>
-                <?php
-                $ativos = 0;
-                foreach (['hsts', 'csp', 'x_frame', 'x_content', 'referrer'] as $c) {
-                    if (!empty($seg[$c])) $ativos++;
-                }
-                ?>
-                <span style="color:#718096; font-size:6.8pt;">&bull; <strong>Headers:</strong> <?= $ativos ?>/5</span>
-              <?php else: ?>
-                <span class="text-muted">Não Auditada</span>
-              <?php endif; ?>
-            </div>
-            
-            <!-- Segurança de E-mail (DNS) -->
-            <?php
-            $dns = !empty($r['auditoria_dns']) ? json_decode($r['auditoria_dns'], true) : null;
-            ?>
-            <div style="margin-bottom:4pt; border-bottom:1px dashed #cbd5e1; padding-bottom:3.5pt; font-size:7.2pt;">
-              <strong>DNS de E-mail (SPAM):</strong>
-              <?php if ($dns): ?>
-                <span class="badge-std <?= $dns['spf_valido'] ? 'badge-ok' : 'badge-danger' ?>" style="padding:1px 2px; font-size:6.5pt;"><?= $dns['spf_valido'] ? '✓ SPF' : '✗ SPF' ?></span>
-                <span class="badge-std <?= $dns['dmarc_valido'] ? 'badge-ok' : 'badge-danger' ?>" style="padding:1px 2px; font-size:6.5pt;"><?= $dns['dmarc_valido'] ? '✓ DMARC' : '✗ DMARC' ?></span>
-              <?php else: ?>
-                <span class="text-muted">Não Auditada</span>
-              <?php endif; ?>
-            </div>
+    // ── Pré-calcular dados compacto ──
+    $geo_c  = !empty($r['auditoria_hospedagem']) ? json_decode($r['auditoria_hospedagem'], true) : null;
+    $seg_c  = !empty($r['auditoria_seguranca'])  ? json_decode($r['auditoria_seguranca'],  true) : null;
+    $dns_c  = !empty($r['auditoria_dns'])        ? json_decode($r['auditoria_dns'],         true) : null;
+    $inv_c  = (float)($r['ads_investimento'] ?? 0);
+    $cpc_c  = (float)($r['ads_cpc'] ?? 0);
+    $temAds_c = $inv_c > 0 && $cpc_c > 0;
+    if ($temAds_c) {
+        $P_c = (int)($r['ps_performance_mobile'] ?? 35);
+        $D_c = $P_c >= 90 ? 3 : ($P_c >= 50 ? 30 - 0.3 * $P_c : 65 - 0.7 * $P_c);
+        $D_c = max(0, min(100, $D_c));
+        $prejuizo_c = $inv_c * ($D_c / 100);
+        $cliques_c  = $cpc_c > 0 ? round($prejuizo_c / $cpc_c) : 0;
+    }
 
-            <!-- Google Ads & Segurança de Anúncios (Nova Seção Integrada) -->
-            <?php
-            $adExpC = trim($r['ad_experience_status'] ?? '');
-            $sbC = trim($r['safe_browsing_status'] ?? '');
-            $apC = trim($r['ads_policy_status'] ?? '');
-            
-            $adExpCompactBadge = 'badge-ok';
-            if (str_contains(strtolower($adExpC), 'warning')) $adExpCompactBadge = 'badge-warn';
-            else if (str_contains(strtolower($adExpC), 'failing')) $adExpCompactBadge = 'badge-danger';
-            
-            $sbCompactBadge = 'badge-ok';
-            if (str_contains(strtolower($sbC), 'parcialmente')) $sbCompactBadge = 'badge-warn';
-            else if (str_contains(strtolower($sbC), 'lista negra') || str_contains(strtolower($sbC), 'perigoso')) $sbCompactBadge = 'badge-danger';
-            
-            $apCompactBadge = 'badge-ok';
-            if (str_contains(strtolower($apC), 'restrição')) $apCompactBadge = 'badge-warn';
-            else if (str_contains(strtolower($apC), 'reprovado') || str_contains(strtolower($apC), 'suspensa')) $apCompactBadge = 'badge-danger';
-            
-            $alertaSegCompacto = '';
-            if ($adExpCompactBadge === 'badge-danger' || $sbCompactBadge === 'badge-danger' || $apCompactBadge === 'badge-danger') {
-                $alertaSegCompacto = '✗ RISCO DE BLOQUEIO ATIVO';
-            } else if ($adExpCompactBadge === 'badge-warn' || $sbCompactBadge === 'badge-warn' || $apCompactBadge === 'badge-warn') {
-                $alertaSegCompacto = '⚠ ALERTA DE CONFORMIDADE ADS';
-            }
-            ?>
-            <div style="font-size:7.2pt;">
-              <strong>Conformidade Google Ads &amp; Segurança:</strong>
-              <table style="border:none; margin-top:2px; width:100%; border-collapse:collapse;">
-                <tr style="border:none;">
-                  <td style="border:none; padding:1px; font-size:6.8pt; width:33%;">Ad Exp: <span class="badge-std <?= $adExpCompactBadge ?>" style="font-size:6pt; padding:0 2px;"><?= $adExpC ? (str_contains(strtolower($adExpC), 'passing') ? 'OK' : (str_contains(strtolower($adExpC), 'warning') ? 'WARN' : 'FAIL')) : 'N/A' ?></span></td>
-                  <td style="border:none; padding:1px; font-size:6.8pt; width:33%;">Safe Br: <span class="badge-std <?= $sbCompactBadge ?>" style="font-size:6pt; padding:0 2px;"><?= $sbC ? (str_contains(strtolower($sbC), 'nenhuma') ? 'OK' : 'FAIL') : 'N/A' ?></span></td>
-                  <td style="border:none; padding:1px; font-size:6.8pt; width:34%;">Policies: <span class="badge-std <?= $apCompactBadge ?>" style="font-size:6pt; padding:0 2px;"><?= $apC ? (str_contains(strtolower($apC), 'sem restr') ? 'OK' : 'FAIL') : 'N/A' ?></span></td>
-                </tr>
-              </table>
-              <?php if ($alertaSegCompacto): ?>
-                <div style="margin-top:3pt; background:#fee2e2; border:1px solid #fca5a5; border-radius:4px; padding:1pt 2pt; color:#b91c1c; font-weight:bold; font-size:6.5pt; text-align:center; text-transform:uppercase; letter-spacing:0.2px;">
-                  <?= $alertaSegCompacto ?>
-                </div>
-              <?php endif; ?>
-            </div>
-          </div>
-        </td>
-      </tr>
-    </table>
-    
-    <!-- SEÇÃO 2: MAIORES FALHAS CRÍTICAS MAPEADAS -->
-    <div class="panel-compact" style="margin-bottom:6pt;">
-      <div class="panel-title">Principais Falhas e Pontos Críticos Detectados</div>
-      <?php 
-      // Mantém a lógica global de bloqueio já calculada no topo
-      if (!empty($problemas)): ?>
-        <table style="border:none;">
-          <tbody>
-            <?php 
-            $i = 0;
-            foreach ($problemas as $p): 
-              $i++;
-              if ($i > 4) break; // Limita a no máximo 4 problemas no compacto para caber exatamente em 1 página
-            ?>
-            <tr>
-              <td style="width:3%; text-align:center; border:none; padding:2.5pt 0; color:#b91c1c;">✗</td>
-              <td style="border:none; padding:2.5pt 4pt; font-size:7.6pt; line-height:1.3;">
-                <strong style="color:#1e293b;"><?= htmlspecialchars($p['impacto'] ?? 'Geral') ?>:</strong> 
-                <?= formatarProblema($p['problema'], $bloquear) ?>
-              </td>
-              <td style="width:12%; border:none; padding:2.5pt 0; text-align:right;">
-                <span class="badge-std badge-<?= strtolower(trim($p['prioridade'])) === 'alta' ? 'danger' : (strtolower(trim($p['prioridade'])) === 'média' ? 'warn' : 'ok') ?>" style="font-size:6.5pt; text-transform:uppercase; padding:1pt 3pt;">
-                  <?= htmlspecialchars($p['prioridade']) ?>
-                </span>
-              </td>
-            </tr>
-            <?php endforeach; ?>
-          </tbody>
-        </table>
+    $adExpC = trim($r['ad_experience_status'] ?? '');
+    $sbC    = trim($r['safe_browsing_status'] ?? '');
+    $apC    = trim($r['ads_policy_status'] ?? '');
+
+    // Status geral
+    $resC = strtoupper(trim($r['resultado_geral'] ?? 'CRÍTICO'));
+    if ($resC === 'BOM')       { $stCor = '#2E7D32'; $stBg = '#EDF7EE'; $stBorder = '#86efac'; $stIcon = '✓'; }
+    elseif ($resC === 'MÉDIO') { $stCor = '#E65100'; $stBg = '#FFF9E6'; $stBorder = '#fde68a'; $stIcon = '!'; }
+    else                       { $stCor = '#D32F2F'; $stBg = '#FDECEA'; $stBorder = '#fca5a5'; $stIcon = '✗'; }
+
+    // Alerta ads
+    $alertaAds = '';
+    $alertaAdsCor = '';
+    if (str_contains(strtolower($adExpC), 'failing') || (str_contains(strtolower($sbC), 'lista negra') || str_contains(strtolower($sbC), 'perigoso')) || str_contains(strtolower($apC), 'suspensa') || str_contains(strtolower($apC), 'reprovado')) {
+        $alertaAds = 'BLOQUEIO DE ANUNCIOS DETECTADO'; $alertaAdsCor = '#D32F2F';
+    } elseif (str_contains(strtolower($adExpC), 'warning') || str_contains(strtolower($sbC), 'parcialmente') || str_contains(strtolower($apC), 'restrição')) {
+        $alertaAds = 'ALERTA: CONFORMIDADE ADS'; $alertaAdsCor = '#E65100';
+    }
+
+    ob_start();
+    // Pré-montar score cards para ter contagem antes do HTML
+    $metricas_c = [];
+    foreach ([
+        ['Perf.',     'ps_performance_desktop',  'ps_performance_mobile'],
+        ['SEO',       'ps_seo_desktop',           'ps_seo_mobile'],
+        ['Práticas',  'ps_boaspraticas_desktop',  'ps_boaspraticas_mobile'],
+        ['Acesso',    'ps_acessibilidade_desktop', 'ps_acessibilidade_mobile'],
+    ] as [$lbl, $fd, $fm]) {
+        $dsk = (string)($r[$fd] ?? '');
+        $mob = (string)($r[$fm] ?? '');
+        $val = $dsk !== '' ? $dsk : $mob;
+        if (!is_numeric($val)) continue;
+        $metricas_c[] = [$lbl, $dsk, $mob, (int)$val];
+    }
+    $temGtm_c = !empty($r['gtm_nota']) && is_numeric($r['gtm_nota']);
+    ?>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: Arial, sans-serif; font-size:7.8pt; color:#1e293b; line-height:1.4; background:#fff; }
+  /* Tabelas com bordas visíveis */
+  table  { border-collapse:collapse; }
+  /* Tabelas de layout (sem bordas) */
+  .lt    { border-collapse:collapse; width:100%; }
+  .lt td { border:none; padding:0; }
+  /* Tabelas de dados */
+  .dt    { border-collapse:collapse; width:100%; }
+  .dt th { background:<?= $AZUL ?>; color:#fff; font-weight:bold; font-size:7pt; border:1px solid <?= $AZUL ?>; text-transform:uppercase; padding:3pt 5pt; }
+  .dt td { border:1px solid #e2e8f0; font-size:7pt; padding:3pt 5pt; color:#334155; }
+  .dt tbody tr:nth-child(even) td { background:#f8fafc; }
+  /* Painel */
+  .panel  { border:1px solid #e2e8f0; border-radius:6px; padding:6pt 8pt; background:#f8fafc; }
+  .ptitle { font-size:7pt; font-weight:bold; color:<?= $AZUL ?>; text-transform:uppercase; letter-spacing:0.4px; margin-bottom:4pt; padding-bottom:3pt; border-bottom:1px solid #e2e8f0; }
+</style>
+</head>
+<body>
+
+<!-- ══ CABEÇALHO ══ -->
+<table class="lt" bgcolor="<?= $AZUL ?>" style="padding:7pt 12pt; border-radius:0;">
+  <tr>
+    <td width="55%" style="padding:7pt 0 7pt 12pt; vertical-align:middle;">
+      <?php if (!empty($r['logo_cliente'])): ?>
+        <img src="<?= htmlspecialchars($r['logo_cliente']) ?>" style="max-height:18pt; max-width:90pt;" /><br>
       <?php else: ?>
-        <div class="badge-std badge-ok py-1.5 px-3">✓ Nenhuma falha crítica mapeada para o site.</div>
+        <span style="font-size:16pt; font-weight:900; color:#fff; letter-spacing:2px;">RAJO</span><br>
       <?php endif; ?>
-    </div>
-    
-    <!-- SEÇÃO 3: CRONOGRAMA DE INTERVENÇÃO MACRO -->
-    <div class="panel-compact" style="margin-bottom:6pt;">
-      <div class="panel-title">Plano de Ação & Intervenções Recomendadas</div>
-      <?php if (!empty($acoes)): ?>
-        <table>
-          <thead>
-            <tr>
-              <th style="width:58%">Intervenção Estrutural Sugerida</th>
-              <th style="width:22%">Responsabilidade</th>
-              <th style="width:20%" align="center">Prazo Recomendado</th>
-            </tr>
-          </thead>
-          <tbody>
-            <?php 
-            $i = 0;
-            foreach ($acoes as $a): 
-              $i++;
-              if ($i > 3) break; // Limita a no máximo 3 no compacto
-            ?>
-            <tr>
-              <td class="text-bold" style="font-size:7.4pt;"><?= ofuscarAcao($a['acao'], $bloquear) ?></td>
-              <td style="color:#4a5568; font-size:7.4pt;"><?= htmlspecialchars($a['responsavel']) ?></td>
-              <td align="center" bgcolor="<?= $AZUL2 ?>" style="color:<?= $AZUL ?>; font-weight:bold; font-size:7.4pt;"><?= htmlspecialchars($a['prazo']) ?></td>
-            </tr>
-            <?php endforeach; ?>
-          </tbody>
-        </table>
-      <?php else: ?>
-        <div class="badge-std badge-ok py-1 px-3">Nenhum plano de ação necessário.</div>
-      <?php endif; ?>
-    </div>
-    
-    <!-- SEÇÃO 4: CONTEXTO E CONCLUSÃO COMERCIAL -->
-    <div class="panel-compact" style="margin-bottom:8pt;">
-      <div class="panel-title">Resumo Técnico & Parecer Comercial</div>
-      <?php if ($r['conclusao']): 
-        // Pega apenas o primeiro ou os dois primeiros parágrafos curtos para caber no compacto
-        $paragrafos = explode("\n\n", $r['conclusao']);
-        $resumo_conclusao = trim($paragrafos[0] ?? '');
-        if (isset($paragrafos[1]) && strlen($resumo_conclusao) < 300) {
-            $resumo_conclusao .= "\n\n" . trim($paragrafos[1]);
-        }
-      ?>
-        <p style="text-align:justify; font-size:7.6pt; color:#334155; line-height:1.35;"><?= nl2br(htmlspecialchars($resumo_conclusao)) ?></p>
-      <?php else: ?>
-        <p class="text-muted small">Sem parecer registrado para este relatório.</p>
-      <?php endif; ?>
-      <div style="margin-top:5pt; border-top:1px dashed #cbd5e1; padding-top:4pt; font-size:7.2pt; color:<?= $AZUL ?>; font-weight:bold; text-align:center;">
-        🎯 Quer eliminar estes gargalos de conversão imediatamente? Entre em contato com a Rajo Desenvolvimento.
+      <span style="font-size:6.5pt; color:rgba(255,255,255,0.7); text-transform:uppercase; letter-spacing:0.8px;">Diagnóstico Estratégico de SEO, Performance e Conversão</span>
+    </td>
+    <td style="text-align:right; font-size:7pt; color:rgba(255,255,255,0.85); padding:7pt 12pt 7pt 0; vertical-align:middle;">
+      <strong style="color:#fff; font-size:8pt;"><?= htmlspecialchars($r['cliente']) ?></strong><br>
+      <?= htmlspecialchars($r['dominio']) ?><br>
+      <?= date('d/m/Y', strtotime($r['data_relatorio'])) ?>
+    </td>
+  </tr>
+</table>
+
+<!-- ══ LINHA 1: STATUS + SCORE CARDS ══ -->
+<table class="lt" style="margin:5pt 0 4pt; table-layout:fixed;">
+  <tr>
+
+    <!-- Status geral -->
+    <td width="26mm" style="padding-right:3mm; vertical-align:top;">
+      <div style="background:<?= $stBg ?>; border:1.5px solid <?= $stBorder ?>; border-radius:6px; padding:5pt 4pt; text-align:center;">
+        <div style="font-size:20pt; font-weight:900; color:<?= $stCor ?>; line-height:1;"><?= $stIcon ?></div>
+        <div style="font-size:7pt; font-weight:bold; color:<?= $stCor ?>; text-transform:uppercase; margin-top:2pt;"><?= htmlspecialchars($r['resultado_geral']) ?></div>
+        <div style="font-size:6pt; color:#64748b; margin-top:1pt;">Status Geral</div>
       </div>
-    </div>
-    
-    <!-- RODAPÉ CORPORATIVO -->
-    <div style="border-top:2px solid <?= $AZUL ?>; padding-top:4pt; text-align:center;">
-      <p style="font-size:8.2pt; color:<?= $AZUL ?>; font-weight:bold; margin-bottom:1pt;">
-        <?= htmlspecialchars($r['analista']) ?> &bull; Rajo Desenvolvimento
-      </p>
-      <p style="font-size:7pt; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px;">
-        rajo.com.br &bull; contato@rajo.com.br &bull; Engenharia de Conversão e Otimização Avançada
-      </p>
-    </div>
-    
-    </body>
-    </html>
+    </td>
+
+    <!-- Score cards -->
+    <?php foreach ($metricas_c as [$lbl, $dsk, $mob, $n]):
+      $cor = $n >= 90 ? '#2E7D32' : ($n >= 50 ? '#E65100' : '#D32F2F');
+      $bg  = $n >= 90 ? '#EDF7EE' : ($n >= 50 ? '#FFF9E6' : '#FDECEA');
+    ?>
+    <td width="24mm" style="padding:0 1.5mm; vertical-align:top;">
+      <div style="background:<?= $bg ?>; border:1px solid <?= $cor ?>; border-radius:6px; padding:5pt 3pt; text-align:center;">
+        <div style="font-size:16pt; font-weight:900; color:<?= $cor ?>; line-height:1.1;"><?= $n ?></div>
+        <div style="background:#e2e8f0; border-radius:3px; height:4pt; margin:3pt 2pt;"><div style="background:<?= $cor ?>; width:<?= max(4,$n) ?>%; height:4pt; border-radius:3px;"></div></div>
+        <div style="font-size:6pt; font-weight:bold; color:<?= $cor ?>; text-transform:uppercase; margin-top:2pt;"><?= $lbl ?></div>
+        <?php if ($dsk !== '' && $mob !== '' && $dsk !== $mob): ?>
+          <div style="font-size:5.5pt; color:#94a3b8; margin-top:1pt;">D:<?= $dsk ?> M:<?= $mob ?></div>
+        <?php endif; ?>
+      </div>
+    </td>
+    <?php endforeach; ?>
+
+    <!-- GTmetrix -->
+    <?php if ($temGtm_c): $gtn = (int)$r['gtm_nota']; $gtCor = $gtn >= 90 ? '#2E7D32' : ($gtn >= 50 ? '#E65100' : '#D32F2F'); $gtBg = $gtn >= 90 ? '#EDF7EE' : ($gtn >= 50 ? '#FFF9E6' : '#FDECEA'); ?>
+    <td width="24mm" style="padding:0 1.5mm; vertical-align:top;">
+      <div style="background:<?= $gtBg ?>; border:1px solid <?= $gtCor ?>; border-radius:6px; padding:5pt 3pt; text-align:center;">
+        <div style="font-size:16pt; font-weight:900; color:<?= $gtCor ?>; line-height:1.1;"><?= $gtn ?></div>
+        <div style="background:#e2e8f0; border-radius:3px; height:4pt; margin:3pt 2pt;"><div style="background:<?= $gtCor ?>; width:<?= max(4,$gtn) ?>%; height:4pt; border-radius:3px;"></div></div>
+        <div style="font-size:6pt; font-weight:bold; color:<?= $gtCor ?>; text-transform:uppercase; margin-top:2pt;">GTmetrix</div>
+      </div>
+    </td>
+    <?php endif; ?>
+
+    <!-- Ads loss -->
+    <?php if ($temAds_c && $D_c > 5): ?>
+    <td width="28mm" style="padding-left:3mm; vertical-align:top;">
+      <div style="background:#fff5f5; border:1.5px solid #fca5a5; border-radius:6px; padding:5pt 4pt; text-align:center;">
+        <div style="font-size:11pt; font-weight:900; color:#dc2626; line-height:1.15;">R$<?= number_format($prejuizo_c, 0, ',', '.') ?></div>
+        <div style="font-size:5.5pt; font-weight:bold; color:#dc2626; text-transform:uppercase; margin-top:2pt;">Perda / mês</div>
+        <div style="font-size:5.5pt; color:#718096; margin-top:2pt;"><?= round($D_c) ?>% desperd. &bull; <?= number_format($cliques_c) ?> cliques</div>
+      </div>
+    </td>
+    <?php endif; ?>
+
+  </tr>
+</table>
+
+<!-- ══ LINHA 2: OPORTUNIDADES + INFRAESTRUTURA ══ -->
+<table class="lt" style="margin-bottom:4pt; table-layout:fixed;">
+  <tr>
+
+    <!-- OPORTUNIDADES -->
+    <td width="108mm" style="padding-right:4mm; vertical-align:top;">
+      <div class="panel">
+        <div class="ptitle">Principais Oportunidades Identificadas</div>
+        <?php if (!empty($problemas)):
+          $cnt = 0;
+          foreach ($problemas as $p):
+            $cnt++; if ($cnt > 4) break;
+            $pri    = strtolower(trim($p['prioridade'] ?? 'alta'));
+            $priCor = $pri === 'alta' ? '#D32F2F' : ($pri === 'média' ? '#E65100' : '#2E7D32');
+            $priBg  = $pri === 'alta' ? '#FDECEA' : ($pri === 'média' ? '#FFF9E6' : '#EDF7EE');
+            $priLbl = $pri === 'alta' ? 'ALTA' : ($pri === 'média' ? 'MED' : 'BAI');
+            // Truncar texto do problema para não estourar a célula
+            $textoProb = formatarProblema($p['problema'], $bloquear);
+        ?>
+        <table class="lt" style="margin:0; padding:3pt 0; border-bottom:1px dashed #e2e8f0; <?= $cnt === min(count($problemas),4) ? 'border-bottom:none;' : '' ?>">
+          <tr>
+            <td width="8pt" style="vertical-align:top; color:<?= $priCor ?>; font-size:9pt; font-weight:bold; padding-top:1pt;">&#9658;</td>
+            <td style="vertical-align:top; font-size:7pt; line-height:1.35; color:#334155; padding:0 4pt;">
+              <?= $textoProb ?>
+              <span style="font-size:6pt; color:#94a3b8;"> — <?= htmlspecialchars(mb_strimwidth($p['impacto'] ?? '', 0, 35, '…')) ?></span>
+            </td>
+            <td width="20pt" style="vertical-align:top; text-align:right; white-space:nowrap;">
+              <span style="background:<?= $priBg ?>; color:<?= $priCor ?>; border:1px solid <?= $priCor ?>; font-size:5.5pt; font-weight:bold; padding:1pt 3pt; border-radius:3px;"><?= $priLbl ?></span>
+            </td>
+          </tr>
+        </table>
+        <?php endforeach;
+        else: ?>
+          <div style="padding:8pt; text-align:center; font-size:7pt; color:#2E7D32; font-weight:bold;">&#10003; Nenhuma falha critica identificada</div>
+        <?php endif; ?>
+      </div>
+    </td>
+
+    <!-- INFRAESTRUTURA & SEGURANÇA -->
+    <td width="78mm" style="vertical-align:top;">
+      <div class="panel">
+        <div class="ptitle">Infraestrutura &amp; Segurança</div>
+
+        <?php
+        // Helper de badge inline (sem classe, 100% inline para mPDF)
+        function badge_c(string $txt, string $bg, string $cor, string $border): string {
+            return "<span style='background:{$bg};color:{$cor};border:1px solid {$border};font-size:6.5pt;font-weight:bold;padding:1pt 4pt;border-radius:3px;'>{$txt}</span>";
+        }
+        ?>
+
+        <!-- CMS -->
+        <?php if (!empty($r['auditoria_cms'])): ?>
+        <table class="lt" style="margin:0; padding:2.5pt 0; border-bottom:1px dashed #e2e8f0;">
+          <tr>
+            <td style="font-size:6.8pt; color:#64748b; width:55pt;">Plataforma</td>
+            <td style="text-align:right;">
+              <?= badge_c(htmlspecialchars($r['auditoria_cms']), $r['auditoria_cms'] !== 'Não Identificado' ? '#dcfce7' : '#fef3c7', $r['auditoria_cms'] !== 'Não Identificado' ? '#166534' : '#92400e', $r['auditoria_cms'] !== 'Não Identificado' ? '#bbf7d0' : '#fde68a') ?>
+            </td>
+          </tr>
+        </table>
+        <?php endif; ?>
+
+        <!-- Hospedagem -->
+        <?php if ($geo_c): ?>
+        <table class="lt" style="margin:0; padding:2.5pt 0; border-bottom:1px dashed #e2e8f0;">
+          <tr>
+            <td style="font-size:6.8pt; color:#64748b; width:55pt;">Hospedagem</td>
+            <td style="text-align:right; font-size:7pt; font-weight:bold; color:#1e293b;">
+              <?= htmlspecialchars(mb_strimwidth($geo_c['provedor'], 0, 22, '…')) ?>
+              <span style="font-weight:normal; color:#94a3b8; font-size:6.5pt;">(<?= htmlspecialchars($geo_c['pais']) ?>)</span>
+            </td>
+          </tr>
+        </table>
+        <?php endif; ?>
+
+        <!-- SSL -->
+        <?php if ($seg_c): $ativos_c = 0; foreach (['hsts','csp','x_frame','x_content','referrer'] as $ck) { if (!empty($seg_c[$ck])) $ativos_c++; } ?>
+        <table class="lt" style="margin:0; padding:2.5pt 0; border-bottom:1px dashed #e2e8f0;">
+          <tr>
+            <td style="font-size:6.8pt; color:#64748b; width:55pt;">SSL / HTTPS</td>
+            <td style="text-align:right;">
+              <?= badge_c($seg_c['ssl_ativo'] ? '&#10003; Ativo' : '&#10007; Inativo', $seg_c['ssl_ativo'] ? '#dcfce7' : '#fee2e2', $seg_c['ssl_ativo'] ? '#166534' : '#991b1b', $seg_c['ssl_ativo'] ? '#bbf7d0' : '#fca5a5') ?>
+              <span style="font-size:6pt; color:#94a3b8;"> Hdrs: <?= $ativos_c ?>/5</span>
+            </td>
+          </tr>
+        </table>
+        <?php endif; ?>
+
+        <!-- DNS -->
+        <?php if ($dns_c): ?>
+        <table class="lt" style="margin:0; padding:2.5pt 0; <?= ($adExpC || $sbC || $apC) ? 'border-bottom:1px dashed #e2e8f0;' : '' ?>">
+          <tr>
+            <td style="font-size:6.8pt; color:#64748b; width:55pt;">E-mail (DNS)</td>
+            <td style="text-align:right;">
+              <?= badge_c($dns_c['spf_valido'] ? '&#10003; SPF' : '&#10007; SPF', $dns_c['spf_valido'] ? '#dcfce7' : '#fee2e2', $dns_c['spf_valido'] ? '#166534' : '#991b1b', $dns_c['spf_valido'] ? '#bbf7d0' : '#fca5a5') ?>
+              &nbsp;<?= badge_c($dns_c['dmarc_valido'] ? '&#10003; DMARC' : '&#10007; DMARC', $dns_c['dmarc_valido'] ? '#dcfce7' : '#fee2e2', $dns_c['dmarc_valido'] ? '#166534' : '#991b1b', $dns_c['dmarc_valido'] ? '#bbf7d0' : '#fca5a5') ?>
+            </td>
+          </tr>
+        </table>
+        <?php endif; ?>
+
+        <!-- Google Ads -->
+        <?php if ($adExpC || $sbC || $apC):
+          $ad_ok = $adExpC && str_contains(strtolower($adExpC), 'passing');
+          $sb_ok = $sbC    && str_contains(strtolower($sbC), 'nenhuma');
+          $ap_ok = $apC    && str_contains(strtolower($apC), 'sem restr');
+        ?>
+        <table class="lt" style="margin:0; padding:2.5pt 0;">
+          <tr>
+            <td style="font-size:6.8pt; color:#64748b; width:55pt;">Google Ads</td>
+            <td style="text-align:right; font-size:6pt;">
+              <?php if ($adExpC): echo badge_c('AdExp:'.($ad_ok?'OK':(str_contains(strtolower($adExpC),'warning')?'WARN':'FAIL')), $ad_ok?'#dcfce7':(str_contains(strtolower($adExpC),'warning')?'#fef3c7':'#fee2e2'), $ad_ok?'#166534':(str_contains(strtolower($adExpC),'warning')?'#92400e':'#991b1b'), $ad_ok?'#bbf7d0':(str_contains(strtolower($adExpC),'warning')?'#fde68a':'#fca5a5')); endif; ?>
+              <?php if ($sbC): echo ' '.badge_c('SB:'.($sb_ok?'OK':'FAIL'), $sb_ok?'#dcfce7':'#fee2e2', $sb_ok?'#166534':'#991b1b', $sb_ok?'#bbf7d0':'#fca5a5'); endif; ?>
+              <?php if ($apC): echo ' '.badge_c('Pol:'.($ap_ok?'OK':(str_contains(strtolower($apC),'restrição')?'WARN':'FAIL')), $ap_ok?'#dcfce7':(str_contains(strtolower($apC),'restrição')?'#fef3c7':'#fee2e2'), $ap_ok?'#166534':(str_contains(strtolower($apC),'restrição')?'#92400e':'#991b1b'), $ap_ok?'#bbf7d0':(str_contains(strtolower($apC),'restrição')?'#fde68a':'#fca5a5')); endif; ?>
+            </td>
+          </tr>
+        </table>
+        <?php if ($alertaAds): ?>
+          <div style="margin-top:3pt; background:<?= $alertaAdsCor === '#D32F2F' ? '#fee2e2' : '#fef3c7' ?>; border:1px solid <?= $alertaAdsCor === '#D32F2F' ? '#fca5a5' : '#fde68a' ?>; border-radius:4px; padding:2pt 4pt; color:<?= $alertaAdsCor ?>; font-weight:bold; font-size:6pt; text-align:center; text-transform:uppercase;"><?= $alertaAds ?></div>
+        <?php endif; ?>
+        <?php endif; ?>
+
+      </div>
+    </td>
+  </tr>
+</table>
+
+<!-- ══ PLANO DE AÇÃO ══ -->
+<?php if (!empty($acoes)): ?>
+<div class="panel" style="margin-bottom:4pt;">
+  <div class="ptitle">Plano de Ação Recomendado</div>
+  <table class="dt">
+    <thead>
+      <tr>
+        <th style="width:55%;">Ação</th>
+        <th style="width:22%;">Responsável</th>
+        <th style="width:13%; text-align:center;">Prazo</th>
+        <th style="width:10%; text-align:center;">Prior.</th>
+      </tr>
+    </thead>
+    <tbody>
+      <?php $i = 0; foreach ($acoes as $a): $i++; if ($i > 3) break;
+        $pri    = strtolower(trim($a['prioridade'] ?? 'alta'));
+        $priCor = $pri === 'alta' ? '#D32F2F' : ($pri === 'média' ? '#E65100' : '#2E7D32');
+        $priBg  = $pri === 'alta' ? '#FDECEA' : ($pri === 'média' ? '#FFF9E6' : '#EDF7EE');
+        $priLbl = $pri === 'alta' ? 'ALTA'    : ($pri === 'média' ? 'MED'    : 'BAIXA');
+      ?>
+      <tr>
+        <td style="font-size:7pt; line-height:1.3;"><?= ofuscarAcao($a['acao'], $bloquear) ?></td>
+        <td style="font-size:7pt; color:#4a5568;"><?= htmlspecialchars($a['responsavel'] ?? '—') ?></td>
+        <td align="center" bgcolor="<?= $AZUL2 ?>" style="color:<?= $AZUL ?>; font-weight:bold; font-size:7pt; white-space:nowrap;"><?= htmlspecialchars($a['prazo'] ?? '—') ?></td>
+        <td align="center" bgcolor="<?= $priBg ?>" style="color:<?= $priCor ?>; font-weight:bold; font-size:6.5pt;"><?= $priLbl ?></td>
+      </tr>
+      <?php endforeach; ?>
+    </tbody>
+  </table>
+</div>
+<?php endif; ?>
+
+<!-- ══ PARECER EXECUTIVO ══ -->
+<?php if ($r['conclusao']): ?>
+<div class="panel" style="margin-bottom:5pt;">
+  <div class="ptitle">Parecer Executivo</div>
+  <?php
+    $pars_c  = explode("\n\n", $r['conclusao']);
+    $res_c   = trim($pars_c[0] ?? '');
+    if (isset($pars_c[1]) && strlen($res_c) < 280) $res_c .= ' ' . trim($pars_c[1]);
+    $res_c   = mb_strimwidth($res_c, 0, 430, '…');
+  ?>
+  <p style="text-align:justify; font-size:7pt; color:#475569; line-height:1.4; margin:0;"><?= nl2br(htmlspecialchars($res_c)) ?></p>
+</div>
+<?php endif; ?>
+
+<!-- ══ RODAPÉ ══ -->
+<table class="lt" bgcolor="<?= $AZUL ?>" style="border-radius:6px; padding:5pt 10pt;">
+  <tr>
+    <td style="font-size:7.5pt; font-weight:bold; color:#fff; padding:5pt 10pt;"><?= htmlspecialchars($r['analista']) ?> &bull; Rajo Desenvolvimento</td>
+    <td style="text-align:right; font-size:6.5pt; color:rgba(255,255,255,0.7); padding:5pt 10pt;">rajo.com.br &bull; contato@rajo.com.br</td>
+  </tr>
+</table>
+
+</body>
+</html>
     <?php
     $html = ob_get_clean();
-    
+
     $mpdf = new \Mpdf\Mpdf([
-        'mode'        => 'utf-8',
-        'format'      => 'A4',
-        'margin_top'  => 10,
-        'margin_right'=> 10,
-        'margin_bottom'=> 10,
-        'margin_left' => 10,
+        'mode'         => 'utf-8',
+        'format'       => 'A4',
+        'margin_top'   => 8,
+        'margin_right' => 10,
+        'margin_bottom'=> 8,
+        'margin_left'  => 10,
         'default_font' => 'arial',
-        'tempDir'     => sys_get_temp_dir() . '/mpdf',
+        'tempDir'      => sys_get_temp_dir() . '/mpdf',
     ]);
-    
+
     $screenshot_local = $r['screenshot_path'] ?? null;
     if ($screenshot_local && file_exists(__DIR__ . '/' . $screenshot_local)) {
         $mpdf->SetWatermarkImage(__DIR__ . '/' . $screenshot_local, 0.05, 'F');
         $mpdf->showWatermarkImage = true;
     }
-    
+
     $mpdf->WriteHTML($html);
-    
+
     $filename = 'Diagnostico_Compacto_' . preg_replace('/[^a-zA-Z0-9]/', '_', $r['cliente']) . '_' . date('Ymd', strtotime($r['data_relatorio'])) . '.pdf';
     $mpdf->Output($filename, 'I');
     exit;
 }
 
-// ─── HTML do relatório ────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// RELATÓRIO COMPLETO — LAYOUT PREMIUM
+// ═══════════════════════════════════════════════════════════════
 ob_start();
+
+// Pré-calcular dados para uso no template
+$resGeral = strtoupper(trim($r['resultado_geral'] ?? 'CRÍTICO'));
+$geo  = !empty($r['auditoria_hospedagem']) ? json_decode($r['auditoria_hospedagem'], true) : null;
+$seg  = !empty($r['auditoria_seguranca']  ) ? json_decode($r['auditoria_seguranca'],   true) : null;
+$dns  = !empty($r['auditoria_dns']        ) ? json_decode($r['auditoria_dns'],          true) : null;
+$segAtivos = 0;
+if ($seg) {
+    foreach (['hsts', 'csp', 'x_frame', 'x_content', 'referrer'] as $c) {
+        if (!empty($seg[$c])) $segAtivos++;
+    }
+}
+
+$scoreGeral = null;
+$scores_num = [];
+foreach (['ps_performance_desktop','ps_performance_mobile','ps_seo_desktop','ps_seo_mobile','ps_acessibilidade_desktop','ps_acessibilidade_mobile','ps_boaspraticas_desktop','ps_boaspraticas_mobile'] as $f) {
+    if (!empty($r[$f]) && is_numeric($r[$f])) $scores_num[] = (int)$r[$f];
+}
+if (!empty($scores_num)) $scoreGeral = round(array_sum($scores_num) / count($scores_num));
+
+$inv = (float)($r['ads_investimento'] ?? 0);
+$cpc = (float)($r['ads_cpc'] ?? 0);
+$temAds = $inv > 0 && $cpc > 0;
+if ($temAds) {
+    $P = (int)($r['ps_performance_mobile'] ?? 35);
+    $D = $P >= 90 ? 3 : ($P >= 50 ? 30 - 0.3 * $P : 65 - 0.7 * $P);
+    $D = max(0, min(100, $D));
+    $prejuizo = $inv * ($D / 100);
+    $cliquesPerdidos = $cpc > 0 ? round($prejuizo / $cpc) : 0;
+    $aproveitado = $inv - $prejuizo;
+}
+
+$adExp = trim($r['ad_experience_status'] ?? '');
+$sb    = trim($r['safe_browsing_status'] ?? '');
+$ap    = trim($r['ads_policy_status'] ?? '');
+
+// Detectar se há comparativo visual possível
+$temComparativo = $scoreGeral !== null;
+
+// Score card helper
+function scoreCard(string $label, string $valDesk, string $valMob, string $AZUL2, string $AZUL): string {
+    $dv = $valDesk !== '' ? $valDesk : null;
+    $mv = $valMob  !== '' ? $valMob  : null;
+    if ($dv === null && $mv === null) return '';
+    $val = $dv ?? $mv;
+    if (!is_numeric($val)) return '';
+    $n   = (int)$val;
+    if ($n >= 90)      { $cor = '#2E7D32'; $bg = '#EDF7EE'; $icon = '✓'; }
+    elseif ($n >= 50)  { $cor = '#E65100'; $bg = '#FFF9E6'; $icon = '!'; }
+    else               { $cor = '#D32F2F'; $bg = '#FDECEA'; $icon = '✗'; }
+
+    $deskHtml = $dv !== null ? "<span style='font-size:7pt;color:#718096;'>Desktop: <strong style='color:{$cor};'>{$dv}</strong></span>" : '';
+    $mobHtml  = $mv !== null ? "<span style='font-size:7pt;color:#718096;'>Mobile: <strong style='color:{$cor};'>{$mv}</strong></span>" : '';
+    $sep = ($dv !== null && $mv !== null) ? " &nbsp;|&nbsp; " : '';
+
+    return "
+    <td style='width:25%; padding:4pt; vertical-align:top;'>
+      <div style='background:{$bg}; border:1.5px solid {$cor}; border-radius:8px; padding:8pt 6pt; text-align:center; height:60pt;'>
+        <div style='font-size:18pt; font-weight:900; color:{$cor}; line-height:1;'>{$n}</div>
+        <div style='font-size:6.5pt; font-weight:bold; color:{$cor}; text-transform:uppercase; letter-spacing:0.3px; margin-top:2pt;'>{$icon} {$label}</div>
+        <div style='margin-top:3pt;'>{$deskHtml}{$sep}{$mobHtml}</div>
+      </div>
+    </td>";
+}
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -566,608 +636,797 @@ ob_start();
 <meta charset="UTF-8">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { font-family: Arial, sans-serif; font-size:9.5pt; color:#2d3748; line-height:1.45; }
-  
-  /* Cabeçalhos modernos e elegantes */
-  h1 { font-size:15pt; color:<?= $AZUL ?>; font-weight:bold; margin-top:14pt; margin-bottom:8pt; text-transform:uppercase; letter-spacing:0.5px; border-bottom:2px solid <?= $AZUL ?>; padding-bottom:3pt; }
-  h2 { font-size:12pt; color:<?= $AZUL ?>; font-weight:bold; margin-top:12pt; margin-bottom:6pt; }
-  h3 { font-size:10pt; color:<?= $AZUL ?>; font-weight:bold; margin-top:10pt; margin-bottom:4pt; }
-  p  { margin-bottom:6pt; line-height:1.45; color:#4a5568; }
-  hr { border:none; border-top:1px solid #edf2f7; margin:10pt 0; }
-  .small { font-size:8pt; }
-  .muted { color:#718096; }
-  
-  /* Tabelas corporativas modernas e limpas */
-  table  { width:100%; border-collapse:collapse; margin-bottom:8pt; margin-top:4pt; }
-  th, td { padding:5pt 6pt; border:1px solid #e2e8f0; font-size:8.5pt; text-align:left; }
-  thead th { background:<?= $AZUL ?>; color:#fff; font-weight:bold; font-size:8.5pt; border:1px solid <?= $AZUL ?>; text-transform:uppercase; letter-spacing:0.5px; }
-  .th-sub  { background:<?= $AZUL2 ?>; color:<?= $AZUL ?>; font-weight:bold; }
-  
-  /* Alertas premium com bordas arredondadas */
-  .box-warn  { background:#fffaf0; border-left:4px solid #dd6b20; border-top:1px solid #feebc8; border-right:1px solid #feebc8; border-bottom:1px solid #feebc8; padding:8pt; margin:6pt 0; font-size:8.5pt; border-radius:4px; color:#c05621; }
-  .box-error { background:#fff5f5; border-left:4px solid #e53e3e; border-top:1px solid #fed7d7; border-right:1px solid #fed7d7; border-bottom:1px solid #fed7d7; padding:8pt; margin:6pt 0; font-size:8.5pt; border-radius:4px; color:#c53030; }
-  .box-ok    { background:#f0fff4; border-left:4px solid #38a169; border-top:1px solid #c6f6d5; border-right:1px solid #c6f6d5; border-bottom:1px solid #c6f6d5; padding:8pt; margin:6pt 0; font-size:8.5pt; border-radius:4px; color:#276749; }
+  body { font-family: Arial, sans-serif; font-size:9.5pt; color:#1e293b; line-height:1.5; background:#fff; }
 
-  /* Capa Minimalista e Premium */
-  .capa-container { padding: 40pt 20pt; text-align:center; }
-  .capa-logo-box { margin-bottom:30pt; }
-  .capa-logo  { font-size:38pt; font-weight:900; color:<?= $AZUL ?>; letter-spacing:6pt; margin-bottom:5pt; }
-  .capa-sub   { font-size:10.5pt; color:#718096; letter-spacing:1px; text-transform:uppercase; margin-bottom:40pt; }
-  .capa-title { font-size:24pt; font-weight:bold; color:<?= $AZUL ?>; margin-bottom:8pt; letter-spacing:-0.5px; line-height:1.2; text-transform:uppercase; }
-  .capa-desc  { font-size:11pt; color:#4a5568; margin-bottom:50pt; font-weight:300; }
-  .capa-table { width:80%; margin:0 auto; border:none; }
-  .capa-table td { padding:6pt 8pt; border:none; border-bottom:1px solid #edf2f7; font-size:9.5pt; }
-  .capa-table tr:last-child td { border-bottom:none; }
-  .capa-rodape { font-size:8pt; color:#a0aec0; font-style:italic; margin-top:60pt; text-transform:uppercase; letter-spacing:1px; }
+  /* ── Tipografia ── */
+  h1 { font-size:13pt; color:#fff; font-weight:bold; text-transform:uppercase; letter-spacing:0.5px; margin:0; padding:0; }
+  h2 { font-size:11pt; color:<?= $AZUL ?>; font-weight:bold; margin:0 0 4pt 0; }
+  h3 { font-size:9.5pt; color:<?= $AZUL ?>; font-weight:bold; margin:0 0 4pt 0; }
+  p  { margin-bottom:6pt; line-height:1.5; color:#475569; font-size:9pt; }
 
-  /* Legenda de Pontuação */
-  .legenda span { font-size:8pt; font-weight:bold; margin-right:12pt; }
+  /* ── Section header ── */
+  .section-header { background:<?= $AZUL ?>; color:#fff; padding:8pt 14pt; border-radius:8px; margin-bottom:14pt; margin-top:4pt; }
+  .section-header .section-num { font-size:8pt; font-weight:bold; letter-spacing:1px; opacity:0.8; text-transform:uppercase; margin-bottom:1pt; }
 
-  /* Quebras de página controladas */
+  /* ── Cards ── */
+  .card { border:1px solid #e2e8f0; border-radius:8px; padding:10pt 12pt; background:#f8fafc; margin-bottom:8pt; }
+  .card-title { font-size:8pt; font-weight:bold; color:<?= $AZUL ?>; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6pt; border-bottom:1px solid #e2e8f0; padding-bottom:4pt; }
+
+  /* ── Tabelas ── */
+  table  { width:100%; border-collapse:collapse; margin-bottom:8pt; }
+  th, td { padding:6pt 8pt; border:1px solid #e2e8f0; font-size:8.5pt; text-align:left; color:#334155; vertical-align:middle; }
+  thead th { background:<?= $AZUL ?>; color:#fff; font-weight:bold; font-size:8.5pt; border:1px solid <?= $AZUL ?>; text-transform:uppercase; letter-spacing:0.3px; }
+  tbody tr:nth-child(even) { background:#f8fafc; }
+
+  /* ── Badges ── */
+  .badge { display:inline-block; padding:2pt 7pt; border-radius:12px; font-size:7.5pt; font-weight:bold; text-align:center; }
+  .badge-ok     { background:#dcfce7; color:#166534; border:1px solid #bbf7d0; }
+  .badge-warn   { background:#fef3c7; color:#92400e; border:1px solid #fde68a; }
+  .badge-danger { background:#fee2e2; color:#991b1b; border:1px solid #fca5a5; }
+  .badge-info   { background:<?= $AZUL2 ?>; color:<?= $AZUL ?>; border:1px solid <?= $AZUL ?>; }
+
+  /* ── Alert boxes ── */
+  .alert-danger { background:#fff5f5; border-left:4px solid #e53e3e; border-top:1px solid #fed7d7; border-right:1px solid #fed7d7; border-bottom:1px solid #fed7d7; padding:9pt 12pt; margin:6pt 0; border-radius:0 6px 6px 0; }
+  .alert-warn   { background:#fffaf0; border-left:4px solid #dd6b20; border-top:1px solid #feebc8; border-right:1px solid #feebc8; border-bottom:1px solid #feebc8; padding:9pt 12pt; margin:6pt 0; border-radius:0 6px 6px 0; }
+  .alert-ok     { background:#f0fff4; border-left:4px solid #38a169; border-top:1px solid #c6f6d5; border-right:1px solid #c6f6d5; border-bottom:1px solid #c6f6d5; padding:9pt 12pt; margin:6pt 0; border-radius:0 6px 6px 0; }
+  .alert-info   { background:<?= $AZUL2 ?>; border-left:4px solid <?= $AZUL ?>; padding:9pt 12pt; margin:6pt 0; border-radius:0 6px 6px 0; }
+
+  /* ── Capa ── */
+  .cover-bg    { background:<?= $AZUL ?>; padding:40pt 30pt 30pt 30pt; }
+  .cover-white { background:#fff; padding:26pt 30pt 30pt 30pt; }
+  .cover-title { font-size:22pt; font-weight:900; color:#fff; letter-spacing:-0.5px; line-height:1.2; margin-bottom:8pt; }
+  .cover-sub   { font-size:10pt; color:rgba(255,255,255,0.8); letter-spacing:0.5px; }
+  .cover-divider { width:50pt; height:3pt; background:#fff; margin:14pt 0; opacity:0.5; }
+  .cover-info  { background:rgba(255,255,255,0.12); border-radius:8px; padding:14pt 18pt; margin-top:20pt; }
+  .cover-info-row { font-size:9pt; color:#fff; padding:4pt 0; border-bottom:1px solid rgba(255,255,255,0.15); }
+  .cover-info-row:last-child { border-bottom:none; }
+  .cover-info-label { color:rgba(255,255,255,0.65); font-size:8.5pt; }
+  .cover-footer { font-size:8pt; color:rgba(255,255,255,0.5); text-align:center; margin-top:30pt; text-transform:uppercase; letter-spacing:0.5px; }
+
+  /* ── Oportunidade card ── */
+  .opp-card { border:1px solid #e2e8f0; border-radius:8px; padding:10pt 12pt; margin-bottom:8pt; background:#fff; }
+  .opp-card-header { font-size:9pt; font-weight:bold; color:#1e293b; margin-bottom:4pt; }
+  .opp-card-desc { font-size:8.5pt; color:#475569; margin-bottom:6pt; line-height:1.45; }
+  .opp-card-footer { font-size:8pt; }
+
+  /* ── Score bar visual ── */
+  .score-bar-wrap { background:#e2e8f0; border-radius:4px; height:8pt; margin-top:3pt; }
+  .score-bar-fill { height:8pt; border-radius:4px; }
+
+  /* ── Page break ── */
   .page-break { page-break-before:always; }
+
+  /* ── Próximos passos ── */
+  .step-item { padding:8pt 0; border-bottom:1px solid #f1f5f9; }
+  .step-item:last-child { border-bottom:none; }
+  .step-num { display:inline-block; width:18pt; height:18pt; border-radius:50%; background:<?= $AZUL ?>; color:#fff; text-align:center; font-size:9pt; font-weight:bold; line-height:18pt; margin-right:6pt; }
 </style>
 </head>
 <body>
 
-<!-- ═══════════════════════════ CAPA ════════════════════════════ -->
-<div class="capa-container">
-  <div class="capa-logo-box">
-    <?php if (!empty($r['logo_cliente'])): ?>
-      <img src="<?= htmlspecialchars($r['logo_cliente']) ?>" style="max-height:80px; margin-bottom:10pt;">
-    <?php else: ?>
-      <div class="capa-logo">RAJO</div>
-    <?php endif; ?>
-    <div class="capa-sub">Desenvolvimento &amp; Consultoria Digital</div>
-  </div>
-  
-  <div style="margin: 40pt 0;">
-    <div class="capa-title">DIAGNÓSTICO TÉCNICO DE SITE</div>
-    <div style="width:60px; height:3px; background:<?= $AZUL ?>; margin: 12pt auto;"></div>
-    <div class="capa-desc">Auditoria de Velocidade, SEO On-Page e Otimização para Mídia Paga</div>
-  </div>
+<!-- ═══════════════════════════════════════ CAPA ═══════════════════════════════════════ -->
+<div class="cover-bg">
+  <table style="border:none; margin:0; width:100%;">
+    <tr>
+      <td style="border:none; padding:0; width:60%; vertical-align:top;">
+        <?php if (!empty($r['logo_cliente'])): ?>
+          <img src="<?= htmlspecialchars($r['logo_cliente']) ?>" style="max-height:50pt; max-width:140pt; margin-bottom:20pt; filter:brightness(10);" />
+        <?php else: ?>
+          <div style="font-size:24pt; font-weight:900; color:#fff; letter-spacing:3px; margin-bottom:20pt;">RAJO</div>
+        <?php endif; ?>
 
-  <table class="capa-table">
-    <tr>
-      <td style="width:40%; color:#718096; font-weight:bold;">Cliente</td>
-      <td style="color:#2d3748; font-weight:bold;"><?= htmlspecialchars($r['cliente']) ?></td>
-    </tr>
-    <tr>
-      <td style="color:#718096; font-weight:bold;">Domínio Analisado</td>
-      <td style="color:<?= $AZUL ?>; font-weight:bold;"><?= htmlspecialchars($r['dominio']) ?></td>
-    </tr>
-    <tr>
-      <td style="color:#718096; font-weight:bold;">Data de Emissão</td>
-      <td style="color:#2d3748;"><?= date('d/m/Y', strtotime($r['data_relatorio'])) ?></td>
-    </tr>
-    <tr>
-      <td style="color:#718096; font-weight:bold;">Responsável Técnico</td>
-      <td style="color:#2d3748;"><?= htmlspecialchars($r['analista']) ?></td>
-    </tr>
-    <tr>
-      <td style="color:#718096; font-weight:bold;">Status do Documento</td>
-      <td style="color:#e53e3e; font-weight:bold;">Confidencial (Revisão Técnico-Comercial)</td>
+        <div style="font-size:8pt; color:rgba(255,255,255,0.6); text-transform:uppercase; letter-spacing:1.5px; margin-bottom:8pt;">Diagnóstico Estratégico</div>
+        <div class="cover-title">Diagnóstico<br>Estratégico de SEO,<br>Performance e<br>Conversão</div>
+        <div class="cover-divider"></div>
+        <div class="cover-sub">Auditoria técnica e análise de impacto comercial</div>
+      </td>
+      <td style="border:none; padding:0; width:40%; vertical-align:top; text-align:right;">
+        <div style="font-size:7.5pt; color:rgba(255,255,255,0.5); text-transform:uppercase; letter-spacing:1px; margin-bottom:6pt;">Emitido em</div>
+        <div style="font-size:11pt; font-weight:bold; color:#fff;"><?= date('d/m/Y', strtotime($r['data_relatorio'])) ?></div>
+      </td>
     </tr>
   </table>
 
-  <div class="capa-rodape">
-    rajo.com.br &bull; contato@rajo.com.br &bull; Documento Oficial
+  <div class="cover-info">
+    <div class="cover-info-row">
+      <table style="border:none; margin:0; width:100%;">
+        <tr>
+          <td style="border:none; padding:3pt 0; width:35%;"><span class="cover-info-label">Cliente</span></td>
+          <td style="border:none; padding:3pt 0; font-weight:bold; font-size:9.5pt; color:#fff;"><?= htmlspecialchars($r['cliente']) ?></td>
+        </tr>
+        <tr>
+          <td style="border:none; padding:3pt 0;"><span class="cover-info-label">Domínio Analisado</span></td>
+          <td style="border:none; padding:3pt 0; font-weight:bold; color:#fff;"><?= htmlspecialchars($r['dominio']) ?></td>
+        </tr>
+        <tr>
+          <td style="border:none; padding:3pt 0;"><span class="cover-info-label">Responsável Técnico</span></td>
+          <td style="border:none; padding:3pt 0; color:#fff;"><?= htmlspecialchars($r['analista']) ?></td>
+        </tr>
+        <tr>
+          <td style="border:none; padding:3pt 0;"><span class="cover-info-label">Classificação</span></td>
+          <td style="border:none; padding:3pt 0; color:rgba(255,200,200,0.9); font-size:8.5pt;">Confidencial — Uso Exclusivo do Cliente</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="cover-footer">
+    rajo.com.br &bull; contato@rajo.com.br &bull; Engenharia de Conversão &amp; Otimização Digital
   </div>
 </div>
 
-<!-- ═══════════════════════ SEÇÃO 1 — RESUMO E CWV ════════════════════ -->
+<!-- ═══════════════════════════ RESUMO EXECUTIVO ═══════════════════════════ -->
 <div class="page-break"></div>
-<h1>1. Resumo Executivo &amp; Diagnóstico Geral</h1>
 
-<p>Este documento apresenta a auditoria técnica de engenharia de software e performance de conversão do site <strong><?= htmlspecialchars($r['dominio']) ?></strong>. A análise foi realizada com base nas métricas oficiais recomendadas pelo ecossistema do Google, visando atestar a viabilidade e a eficiência do tráfego pago e orgânico.</p>
+<div class="section-header">
+  <div class="section-num">Seção 01</div>
+  <h1>Resumo Executivo</h1>
+</div>
 
 <?php
 $resGeral = strtoupper(trim($r['resultado_geral'] ?? 'CRÍTICO'));
-$classeBox = match($resGeral) {
-    'BOM' => 'box-ok',
-    'MÉDIO' => 'box-warn',
-    default => 'box-error',
-};
-$resultadoTexto = match($resGeral) {
-    'BOM' => 'O site apresenta excelente índice de conformidade técnica, necessitando apenas de melhoria contínua.',
-    'MÉDIO' => 'O site possui estabilidade parcial, porém apresenta gargalos e perdas constantes de eficiência comercial.',
-    'RUIM' => 'ATENÇÃO CRÍTICA: Desempenho geral insatisfatório, gerando alto índice de rejeição de leads.',
-    default => 'BLOQUEIO COMERCIAL GRAVE: O site falha nos requisitos de indexação e velocidade mínima.',
-};
+if ($resGeral === 'BOM') {
+    $statusIcon = '✓'; $statusCor = '#2E7D32'; $statusBg = '#EDF7EE'; $statusBorder = '#86efac';
+    $statusTexto = 'O site apresenta boa conformidade técnica. Existem oportunidades de melhoria contínua para maximizar resultados.';
+} elseif ($resGeral === 'MÉDIO') {
+    $statusIcon = '!'; $statusCor = '#E65100'; $statusBg = '#FFF9E6'; $statusBorder = '#fde68a';
+    $statusTexto = 'O site funciona, mas apresenta gargalos que estão limitando vendas, leads e o retorno sobre os seus investimentos em marketing.';
+} else {
+    $statusIcon = '✗'; $statusCor = '#D32F2F'; $statusBg = '#FDECEA'; $statusBorder = '#fca5a5';
+    $statusTexto = 'O site apresenta problemas críticos que prejudicam diretamente a captação de clientes e o desempenho nas buscas do Google.';
+}
 ?>
-<div class="<?= $classeBox ?>">
-  <strong>DIAGNÓSTICO FINAL: <?= htmlspecialchars($r['resultado_geral']) ?></strong> — <?= $resultadoTexto ?>
+
+<!-- Status geral em destaque -->
+<div style="background:<?= $statusBg ?>; border:2px solid <?= $statusBorder ?>; border-radius:10px; padding:14pt 18pt; margin-bottom:16pt;">
+  <table style="border:none; margin:0; width:100%;">
+    <tr>
+      <td style="border:none; padding:0; width:70pt; text-align:center; vertical-align:middle;">
+        <div style="font-size:28pt; font-weight:900; color:<?= $statusCor ?>; line-height:1;"><?= $statusIcon ?></div>
+        <div style="font-size:8pt; font-weight:bold; color:<?= $statusCor ?>; text-transform:uppercase; margin-top:2pt;"><?= htmlspecialchars($r['resultado_geral']) ?></div>
+      </td>
+      <td style="border:none; padding:0 0 0 14pt; vertical-align:middle;">
+        <div style="font-size:11pt; font-weight:bold; color:<?= $statusCor ?>; margin-bottom:4pt;">Status Geral do Site</div>
+        <p style="font-size:9pt; color:#475569; margin:0; line-height:1.5;"><?= $statusTexto ?></p>
+      </td>
+      <?php if ($scoreGeral !== null): ?>
+      <td style="border:none; padding:0 0 0 14pt; width:80pt; text-align:center; vertical-align:middle;">
+        <div style="font-size:28pt; font-weight:900; color:<?= corNota((string)$scoreGeral) ?>; line-height:1;"><?= $scoreGeral ?></div>
+        <div style="font-size:7.5pt; color:#718096; text-transform:uppercase; font-weight:bold;">Score Médio</div>
+        <div style="font-size:7pt; color:#a0aec0;">de 100</div>
+      </td>
+      <?php endif; ?>
+    </tr>
+  </table>
 </div>
 
-<?php if (str_contains(strtolower($r['gtm_nota'] ?? ''), 'erro') || str_contains(strtolower($r['gtm_nota'] ?? ''), 'timeout')): ?>
-<div class="box-error" style="background:#fff5f5; border-left:4px solid #e53e3e; padding:8pt; margin:6pt 0; border-radius:4px;">
-  <strong>🚨 IMPEDIMENTO TÉCNICO DE PROCESSAMENTO (TIMEOUT):</strong><br>
-  A tentativa de auditoria automatizada do Lighthouse falhou devido a um excesso de processamento e latência de scripts, gerando estouro de tempo limite (Timeout). Isso atesta um travamento severo de CPU que causa o abandono imediato de visitantes e punições severas no ranking do Google Ads.
+<!-- Score cards das métricas -->
+<?php
+$scoreCards = [];
+if (!empty($r['ps_performance_desktop']) || !empty($r['ps_performance_mobile'])) {
+    $scoreCards[] = ['Performance', (string)($r['ps_performance_desktop'] ?? ''), (string)($r['ps_performance_mobile'] ?? '')];
+}
+if (!empty($r['ps_seo_desktop']) || !empty($r['ps_seo_mobile'])) {
+    $scoreCards[] = ['SEO', (string)($r['ps_seo_desktop'] ?? ''), (string)($r['ps_seo_mobile'] ?? '')];
+}
+if (!empty($r['ps_acessibilidade_desktop']) || !empty($r['ps_acessibilidade_mobile'])) {
+    $scoreCards[] = ['Acessibilidade', (string)($r['ps_acessibilidade_desktop'] ?? ''), (string)($r['ps_acessibilidade_mobile'] ?? '')];
+}
+if (!empty($r['ps_boaspraticas_desktop']) || !empty($r['ps_boaspraticas_mobile'])) {
+    $scoreCards[] = ['Boas Práticas', (string)($r['ps_boaspraticas_desktop'] ?? ''), (string)($r['ps_boaspraticas_mobile'] ?? '')];
+}
+if (!empty($scoreCards)):
+?>
+<div style="margin-bottom:16pt;">
+  <div style="font-size:8pt; font-weight:bold; color:#64748b; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8pt;">Pontuações por Categoria (Google PageSpeed Insights)</div>
+  <table style="border:none; margin:0; border-collapse:separate; border-spacing:6pt;">
+    <tr>
+      <?php foreach ($scoreCards as [$lbl, $dsk, $mob]): ?>
+        <?php
+        $val = $dsk !== '' ? $dsk : $mob;
+        if (!is_numeric($val)) continue;
+        $n = (int)$val;
+        $cor = $n >= 90 ? '#2E7D32' : ($n >= 50 ? '#E65100' : '#D32F2F');
+        $bg  = $n >= 90 ? '#EDF7EE' : ($n >= 50 ? '#FFF9E6' : '#FDECEA');
+        $barColor = $cor;
+        $barWidth = max(4, $n);
+        ?>
+        <td style="width:25%; padding:0; border:none; vertical-align:top;">
+          <div style="background:<?= $bg ?>; border:1.5px solid <?= $cor ?>; border-radius:8px; padding:10pt 8pt; text-align:center;">
+            <div style="font-size:24pt; font-weight:900; color:<?= $cor ?>; line-height:1.1;"><?= $n ?></div>
+            <div style="font-size:7.5pt; font-weight:bold; color:<?= $cor ?>; text-transform:uppercase; letter-spacing:0.3px; margin-top:3pt;"><?= htmlspecialchars($lbl) ?></div>
+            <div style="background:#e2e8f0; border-radius:4px; height:5pt; margin-top:6pt;">
+              <div style="background:<?= $barColor ?>; width:<?= $barWidth ?>%; height:5pt; border-radius:4px;"></div>
+            </div>
+            <?php if ($dsk !== '' && $mob !== '' && $dsk !== $mob): ?>
+              <div style="font-size:6.5pt; color:#718096; margin-top:3pt;">D: <strong><?= $dsk ?></strong> &nbsp;M: <strong><?= $mob ?></strong></div>
+            <?php elseif ($dsk !== ''): ?>
+              <div style="font-size:6.5pt; color:#718096; margin-top:3pt;">Desktop &amp; Mobile</div>
+            <?php endif; ?>
+          </div>
+        </td>
+      <?php endforeach; ?>
+    </tr>
+  </table>
 </div>
 <?php endif; ?>
 
-<h3 style="margin-top:10pt;">Pontuações de Auditoria (Google PageSpeed / GTmetrix)</h3>
-<table>
+<div style="font-size:8pt; color:#94a3b8; margin-bottom:16pt;">
+  <span style="margin-right:12pt; font-weight:bold; color:#2E7D32;">&#9632; 90–100 = Excelente</span>
+  <span style="margin-right:12pt; font-weight:bold; color:#E65100;">&#9632; 50–89 = Atenção</span>
+  <span style="font-weight:bold; color:#D32F2F;">&#9632; 0–49 = Crítico</span>
+</div>
+
+<?php if (str_contains(strtolower($r['gtm_nota'] ?? ''), 'erro') || str_contains(strtolower($r['gtm_nota'] ?? ''), 'timeout')): ?>
+<div class="alert-danger" style="margin-bottom:12pt;">
+  <strong style="color:#c53030;">Impedimento Técnico Detectado:</strong>
+  <span style="display:block; font-size:8.5pt; color:#4a5568; margin-top:3pt; line-height:1.5;">A análise automatizada falhou por sobrecarga de processamento no site. Isso indica lentidão severa que causa abandono imediato de visitantes e penalidades no Google Ads.</span>
+</div>
+<?php endif; ?>
+
+
+<!-- ═══════════════════════ PRINCIPAIS OPORTUNIDADES ═══════════════════════ -->
+<?php if (!empty($problemas)): ?>
+
+<div class="section-header">
+  <div class="section-num">Seção 02</div>
+  <h1>Principais Oportunidades Encontradas</h1>
+</div>
+
+<p>Identificamos os seguintes pontos de melhoria que estão impactando diretamente os resultados do site:</p>
+
+<?php foreach ($problemas as $i => $prob):
+    $pri = strtolower(trim($prob['prioridade'] ?? 'alta'));
+    if ($pri === 'alta')       { $priBg = '#FDECEA'; $priCor = '#D32F2F'; $priBorder = '#fca5a5'; $priLabel = 'Alta Prioridade'; }
+    elseif ($pri === 'média')  { $priBg = '#FFF9E6'; $priCor = '#E65100'; $priBorder = '#fde68a'; $priLabel = 'Média Prioridade'; }
+    else                       { $priBg = '#EDF7EE'; $priCor = '#2E7D32'; $priBorder = '#bbf7d0'; $priLabel = 'Baixa Prioridade'; }
+    $impactoTexto = impactoNegocio($prob['problema'] ?? '', $prob['impacto'] ?? '');
+?>
+<div style="border:1px solid #e2e8f0; border-left:4px solid <?= $priCor ?>; border-radius:0 8px 8px 0; padding:12pt 14pt; margin-bottom:10pt; background:#fff;">
+  <table style="border:none; margin:0; width:100%;">
+    <tr>
+      <td style="border:none; padding:0; vertical-align:top;">
+        <div style="font-size:9.5pt; font-weight:bold; color:#1e293b; margin-bottom:4pt;"><?= formatarProblema($prob['problema'], $bloquear) ?></div>
+        <div style="font-size:8.5pt; color:#475569; line-height:1.5; margin-bottom:6pt;"><?= $impactoTexto ?></div>
+        <div style="font-size:8pt;">
+          <span style="color:#64748b; font-weight:bold;">Canal impactado:</span>
+          <span style="color:#475569;"> <?= htmlspecialchars($prob['impacto'] ?? '—') ?></span>
+        </div>
+      </td>
+      <td style="border:none; padding:0 0 0 12pt; width:80pt; text-align:center; vertical-align:middle;">
+        <div style="background:<?= $priBg ?>; border:1px solid <?= $priBorder ?>; border-radius:20px; padding:4pt 10pt; font-size:7.5pt; font-weight:bold; color:<?= $priCor ?>; text-transform:uppercase; white-space:nowrap;"><?= $priLabel ?></div>
+      </td>
+    </tr>
+  </table>
+</div>
+<?php endforeach; ?>
+<?php endif; ?>
+
+
+<!-- ═══════════════════════ IMPACTO COMERCIAL ═══════════════════════ -->
+<div style="margin-top:14pt;"></div>
+
+<div class="section-header">
+  <div class="section-num">Seção 03</div>
+  <h1>Impacto Comercial</h1>
+</div>
+
+<p>Veja como os problemas técnicos encontrados se traduzem em consequências reais para o seu negócio:</p>
+
+<table style="margin-bottom:16pt;">
   <thead>
     <tr>
-      <th style="width:30%;">Categoria</th>
-      <th style="width:34%;">Ferramenta de Origem</th>
-      <th style="width:18%; text-align:center;">Desktop</th>
-      <th style="width:18%; text-align:center;">Mobile</th>
+      <th style="width:35%;">Problema Identificado</th>
+      <th style="width:45%;">Consequência para o Negócio</th>
+      <th style="width:20%; text-align:center;">Impacto</th>
     </tr>
   </thead>
   <tbody>
     <?php
-    $scores = [
-      ['Performance Geral',    'PageSpeed Insights', $r['ps_performance_desktop'], $r['ps_performance_mobile']],
-      ['SEO On-Page Técnico',  'PageSpeed Insights', $r['ps_seo_desktop'],          $r['ps_seo_mobile']],
-      ['Acessibilidade de Interface', 'PageSpeed Insights', $r['ps_acessibilidade_desktop'], $r['ps_acessibilidade_mobile']],
-      ['Melhores Práticas Web',  'PageSpeed Insights', $r['ps_boaspraticas_desktop'],  $r['ps_boaspraticas_mobile']],
-      ['Performance Bruta',    'GTmetrix (Desktop)', ($r['gtm_nota'] === 'Erro (Lighthouse Timeout)' ? '⚠ Erro' : $r['gtm_nota']), '–'],
-    ];
-    
-    $scoresFiltrados = [];
-    foreach ($scores as $s) {
-        $isGt = (str_contains(strtolower($s[1]), 'gtmetrix'));
-        if (deveExibirLinha((string)$s[2], (string)$s[3], $isGt)) {
-            $scoresFiltrados[] = $s;
-        }
+    // Gerar linhas de impacto com base nos problemas + dados técnicos
+    $linhasImpacto = [];
+
+    foreach ($problemas as $prob) {
+        $p = mb_strtolower($prob['problema'] ?? '');
+        $pri = strtolower(trim($prob['prioridade'] ?? 'alta'));
+        if ($pri === 'alta') { $impCor = '#D32F2F'; $impBg = '#FDECEA'; $impLabel = 'Alto'; }
+        elseif ($pri === 'média') { $impCor = '#E65100'; $impBg = '#FFF9E6'; $impLabel = 'Médio'; }
+        else { $impCor = '#2E7D32'; $impBg = '#EDF7EE'; $impLabel = 'Baixo'; }
+        $linhasImpacto[] = [
+            'problema' => formatarProblema($prob['problema'], $bloquear),
+            'consequencia' => impactoNegocio($prob['problema'], $prob['impacto'] ?? ''),
+            'cor' => $impCor, 'bg' => $impBg, 'label' => $impLabel,
+        ];
     }
-    
-    if (!empty($scoresFiltrados)):
-      foreach ($scoresFiltrados as [$cat, $tool, $desk, $mob]):
-        $dv = (string)($desk ?? '–');
-        $mv = (string)($mob  ?? '–');
-        $dv = $dv !== '' ? $dv : '–';
-        $mv = $mv !== '' ? $mv : '–';
-      ?>
-      <tr>
-        <td style="font-weight:bold;"><?= htmlspecialchars($cat) ?></td>
-        <td style="color:#718096;"><?= htmlspecialchars($tool) ?></td>
-        <?= score_cell($dv) ?>
-        <?= score_cell($mv) ?>
-      </tr>
-      <?php endforeach; ?>
-    <?php else: ?>
-      <tr>
-        <td colspan="4" align="center" style="color:#2E7D32; font-weight:bold; padding:15pt; font-size:9pt; background:#f0fff4;">
-          ✓ Excelente Conformidade: Todas as pontuações do site encontram-se excelentes (acima de 85/100).
-        </td>
-      </tr>
+
+    // Adicionar linhas de infraestrutura se problemáticas
+    if ($seg && !$seg['ssl_ativo']) {
+        $linhasImpacto[] = ['problema' => 'Certificado de segurança (SSL) inativo', 'consequencia' => 'Navegadores exibem aviso de "site não seguro", afastando clientes antes mesmo de ver sua oferta.', 'cor' => '#D32F2F', 'bg' => '#FDECEA', 'label' => 'Alto'];
+    }
+    if ($dns && !$dns['spf_valido']) {
+        $linhasImpacto[] = ['problema' => 'Configuração de e-mail (SPF) ausente', 'consequencia' => 'E-mails enviados pelo domínio podem cair no spam, comprometendo a comunicação com clientes.', 'cor' => '#E65100', 'bg' => '#FFF9E6', 'label' => 'Médio'];
+    }
+    if ($dns && !$dns['dmarc_valido']) {
+        $linhasImpacto[] = ['problema' => 'Proteção de domínio (DMARC) ausente', 'consequencia' => 'Terceiros mal-intencionados podem enviar e-mails falsos usando o nome do seu domínio.', 'cor' => '#E65100', 'bg' => '#FFF9E6', 'label' => 'Médio'];
+    }
+
+    foreach ($linhasImpacto as $li):
+    ?>
+    <tr>
+      <td style="font-size:8.5pt; font-weight:500;"><?= $li['problema'] ?></td>
+      <td style="font-size:8.5pt; color:#475569; line-height:1.45;"><?= htmlspecialchars($li['consequencia']) ?></td>
+      <td align="center" bgcolor="<?= $li['bg'] ?>" style="color:<?= $li['cor'] ?>; font-weight:bold; font-size:8pt;"><?= $li['label'] ?></td>
+    </tr>
+    <?php endforeach; ?>
+    <?php if (empty($linhasImpacto)): ?>
+    <tr>
+      <td colspan="3" align="center" style="color:#2E7D32; font-weight:bold; padding:12pt;">
+        ✓ Nenhum impacto comercial crítico identificado.
+      </td>
+    </tr>
     <?php endif; ?>
   </tbody>
 </table>
 
-<p class="small legenda" style="margin-bottom:8pt;">
-  <span style="color:#2E7D32">■ 90–100 = Bom</span>
-  <span style="color:#E65100">■ 50–89 = Intermediário</span>
-  <span style="color:#D32F2F">■ 0–49 = Crítico</span>
-</p>
-
-<?php if ($r['obs_pagespeed']): ?>
-<div class="box-warn" style="margin-bottom:8pt;"><strong>Anotação Técnica:</strong> <?= nl2br(htmlspecialchars($r['obs_pagespeed'])) ?></div>
-<?php endif; ?>
-
-<h3 style="margin-top:12pt; margin-bottom:6pt;">Diagnóstico Avançado de Infraestrutura & Segurança</h3>
-<p>Coletamos automaticamente os parâmetros estruturais do site e servidores para mapear deficiências de segurança cibernética e entregabilidade de canais comerciais:</p>
-<table style="margin-bottom:12pt;">
-  <thead>
+<?php if ($temAds): ?>
+<!-- Bloco de impacto financeiro em Ads -->
+<div style="background:#fff5f5; border:2px solid #fca5a5; border-radius:10px; padding:14pt 18pt; margin-bottom:16pt;">
+  <div style="font-size:10pt; font-weight:bold; color:#c53030; margin-bottom:8pt;">Estimativa de Desperdício em Anúncios Pagos</div>
+  <table style="border:none; margin:0; width:100%;">
     <tr>
-      <th style="width:25%;">Parâmetro de Auditoria</th>
-      <th style="width:50%;">Resultado / Métrica Identificada</th>
-      <th style="width:25%; text-align:center;">Status Técnico</th>
-    </tr>
-  </thead>
-  <tbody>
-    <!-- CMS -->
-    <tr>
-      <td style="font-weight:bold;">Plataforma / CMS</td>
-      <td>Detecção de assinaturas de desenvolvimento e tecnologias no site inicial.</td>
-      <td align="center" bgcolor="<?= ($r['auditoria_cms'] ?? 'Não Identificado') !== 'Não Identificado' ? '#EDF7EE' : '#FFF9E6' ?>" style="color:<?= ($r['auditoria_cms'] ?? 'Não Identificado') !== 'Não Identificado' ? '#2E7D32' : '#E65100' ?>; font-weight:bold;">
-        <?= htmlspecialchars($r['auditoria_cms'] ?? 'Não Identificado') ?>
-      </td>
-    </tr>
-    
-    <!-- Hospedagem -->
-    <?php
-    $geo = !empty($r['auditoria_hospedagem']) ? json_decode($r['auditoria_hospedagem'], true) : null;
-    ?>
-    <tr>
-      <td style="font-weight:bold;">Hospedagem & Geolocalização</td>
-      <td>
-        <?php if ($geo): ?>
-          Provedor: <strong><?= htmlspecialchars($geo['provedor']) ?></strong><br>
-          Local do Servidor: <strong><?= htmlspecialchars($geo['cidade']) ?>, <?= htmlspecialchars($geo['pais']) ?></strong> &bull; IP: <span style="font-family:monospace;"><?= htmlspecialchars($geo['ip']) ?></span>
-        <?php else: ?>
-          Dados de IP e servidores não mapeados.
-        <?php endif; ?>
-      </td>
-      <td align="center" bgcolor="<?= $geo ? '#EDF7EE' : '#FDECEA' ?>" style="color:<?= $geo ? '#2E7D32' : '#D32F2F' ?>; font-weight:bold;">
-        <?= $geo ? '✓ Mapeado' : '✗ Ausente' ?>
-      </td>
-    </tr>
-    
-    <!-- SSL / HTTPS -->
-    <?php
-    $seg = !empty($r['auditoria_seguranca']) ? json_decode($r['auditoria_seguranca'], true) : null;
-    $segAtivos = 0;
-    if ($seg) {
-        foreach (['hsts', 'csp', 'x_frame', 'x_content', 'referrer'] as $c) {
-            if (!empty($seg[$c])) $segAtivos++;
-        }
-    }
-    ?>
-    <tr>
-      <td style="font-weight:bold;">Segurança HTTP & SSL</td>
-      <td>
-        <?php if ($seg): ?>
-          Certificado SSL/HTTPS: <strong><?= $seg['ssl_ativo'] ? 'Ativo (Seguro)' : 'Inativo (Inseguro)' ?></strong><br>
-          Nível de Proteção do Host: <strong><?= $segAtivos ?> de 5 cabeçalhos modernos ativos</strong>
-        <?php else: ?>
-          Verificação de segurança HTTP pendente.
-        <?php endif; ?>
-      </td>
-      <td align="center" bgcolor="<?= ($seg && $seg['ssl_ativo'] && $segAtivos >= 2) ? '#EDF7EE' : (($seg && $seg['ssl_ativo']) ? '#FFF9E6' : '#FDECEA') ?>" style="color:<?= ($seg && $seg['ssl_ativo'] && $segAtivos >= 2) ? '#2E7D32' : (($seg && $seg['ssl_ativo']) ? '#E65100' : '#D32F2F') ?>; font-weight:bold;">
-        <?= ($seg && $seg['ssl_ativo']) ? ($segAtivos >= 2 ? '✓ Forte' : '⚠ Médio') : '✗ Inseguro' ?>
-      </td>
-    </tr>
-    
-    <!-- DNS de E-mail (SPF / DMARC) -->
-    <?php
-    $dns = !empty($r['auditoria_dns']) ? json_decode($r['auditoria_dns'], true) : null;
-    ?>
-    <tr>
-      <td style="font-weight:bold;">DNS de E-mail (SPAM/Fraud)</td>
-      <td>
-        <?php if ($dns): ?>
-          Entrada SPF: <strong><?= $dns['spf_valido'] ? '✓ Configurado' : '✗ Ausente/Inválido' ?></strong><br>
-          Entrada DMARC: <strong><?= $dns['dmarc_valido'] ? '✓ Configurado' : '✗ Ausente' ?></strong>
-        <?php else: ?>
-          Verificação de chaves DNS pendente.
-        <?php endif; ?>
-      </td>
-      <td align="center" bgcolor="<?= ($dns && $dns['spf_valido'] && $dns['dmarc_valido']) ? '#EDF7EE' : (($dns && ($dns['spf_valido'] || $dns['dmarc_valido'])) ? '#FFF9E6' : '#FDECEA') ?>" style="color:<?= ($dns && $dns['spf_valido'] && $dns['dmarc_valido']) ? '#2E7D32' : (($dns && ($dns['spf_valido'] || $dns['dmarc_valido'])) ? '#E65100' : '#D32F2F') ?>; font-weight:bold;">
-        <?= ($dns && $dns['spf_valido'] && $dns['dmarc_valido']) ? '✓ Seguro' : (($dns && ($dns['spf_valido'] || $dns['dmarc_valido'])) ? '⚠ Vulnerável' : '✗ Crítico') ?>
-      </td>
-    </tr>
-  </tbody>
-</table>
-
-<h2 style="margin-top:10pt;">2. Core Web Vitals (Lab Metrics do Google)</h2>
-<p>Os Core Web Vitals representam a experiência real do usuário em tempo de interação. Baixo desempenho nestas métricas inflaciona diretamente o custo de campanhas e degrada a indexação orgânica.</p>
-
-<table>
-  <thead>
-    <tr>
-      <th style="width:10%; text-align:center;">Métrica</th>
-      <th style="width:34%;">Descrição e Nome Técnico</th>
-      <th style="width:14%; text-align:center;">Referência</th>
-      <th style="width:14%; text-align:center;">Desktop</th>
-      <th style="width:14%; text-align:center;">Mobile</th>
-      <th style="width:14%; text-align:center;">Status</th>
-    </tr>
-  </thead>
-  <tbody>
-    <?php
-    $cwv_rows = [
-      ['lcp',   'LCP',   'Largest Contentful Paint (Renderização)', '&lt; 2,5 s'],
-      ['inp',   'INP',   'Interaction to Next Paint (Interatividade)', '&lt; 200 ms'],
-      ['cls',   'CLS',   'Cumulative Layout Shift (Estabilidade Visual)', '&lt; 0,1'],
-      ['fcp',   'FCP',   'First Contentful Paint (Tempo de Resposta)', '&lt; 1,8 s'],
-      ['ttfb',  'TTFB',  'Time to First Byte (Tempo de Resposta do Host)', '&lt; 600 ms'],
-      ['speed', 'Speed', 'Speed Index (Índice de Velocidade Visual)', '&lt; 3,4 s'],
-    ];
-    foreach ($cwv_rows as [$key, $sigla, $nome, $ref]):
-      $status = $r["cwv_{$key}_status"] ?? 'Ruim';
-      $desk   = cwv_val((string)($r["cwv_{$key}_desktop"] ?? ''));
-      $mob    = cwv_val((string)($r["cwv_{$key}_mobile"]  ?? ''));
-    ?>
-    <tr>
-      <td bgcolor="<?= $AZUL2 ?>" style="color:<?= $AZUL ?>;font-weight:bold;text-align:center;"><?= $sigla ?></td>
-      <td style="font-size:8pt;"><?= $nome ?></td>
-      <td style="color:#2E7D32;font-weight:bold;text-align:center;font-size:8pt;"><?= $ref ?></td>
-      <td align="center" style="font-weight:bold;"><?= $desk ?></td>
-      <td align="center" style="font-weight:bold;"><?= $mob ?></td>
-      <td align="center" bgcolor="<?= bgStatus($status) ?>" style="color:<?= corStatus($status) ?>;font-weight:bold;"><?= htmlspecialchars($status) ?></td>
-    </tr>
-    <?php endforeach; ?>
-  </tbody>
-</table>
-
-<!-- ═══════════════════════ SEÇÃO 3 — PROBLEMAS E ADS ════════════════ -->
-<div class="page-break"></div>
-<h1>3. Análise de Gargalos Técnicos Mapeados</h1>
-<p>Os seguintes gargalos estruturais de programação e acessibilidade foram detectados, exigindo intervenção especializada corporativa:</p>
-
-<?php 
-$bloquear = ($r['bloquear_plano'] ?? 0) == 1;
-if (!empty($problemas)): 
-?>
-<table>
-  <thead>
-    <tr>
-      <th style="width:62%">Gargalo Técnico Identificado</th>
-      <th style="width:20%">Canal de Impacto</th>
-      <th style="width:18%" align="center">Severidade</th>
-    </tr>
-  </thead>
-  <tbody>
-    <?php foreach ($problemas as $prob): ?>
-    <tr>
-      <td style="line-height:1.4;"><?= formatarProblema($prob['problema'], $bloquear) ?></td>
-      <td style="color:#718096; font-size:8pt;"><?= htmlspecialchars($prob['impacto']) ?></td>
-      <td align="center"
-          bgcolor="<?= bgPri($prob['prioridade']) ?>"
-          style="color:<?= corPri($prob['prioridade']) ?>;font-weight:bold; font-size:8pt;">
-        <?= htmlspecialchars($prob['prioridade']) ?>
-      </td>
-    </tr>
-    <?php endforeach; ?>
-  </tbody>
-</table>
-<?php else: ?>
-<div class="box-warn">Nenhum problema registrado no banco de dados.</div>
-<?php endif; ?>
-
-<h2 style="margin-top:10pt;">4. Impacto Estratégico no Tráfego Pago &amp; Conversão</h2>
-<p>Abaixo estão detalhados os canais onde os gargalos técnicos mapeados exercem maior atrito comercial:</p>
-
-<p><strong>1. Retorno sobre Investimento (Google Ads ROI):</strong><br>
-O algoritmo do Google Ads avalia severamente a <em>Landing Page Experience</em>. Páginas com instabilidade visual recebem notas baixas no <strong>Quality Score (Índice de Qualidade)</strong>. Isso inflaciona diretamente o valor pago por clique (CPC) e reduz a entrega de anúncios, destruindo a lucratividade das campanhas.</p>
-
-<p><strong>2. Rastreamento e Pixel de Metas (Data Layer):</strong><br>
-A ausência de tags estruturadas de conversão impede que o algoritmo de lances inteligentes (Smart Bidding) funcione corretamente, resultando em desperdício de verba de mídia por falta de dados para otimização.</p>
-
-<p><strong>3. Retenção de Tráfego Móvel (Mobile Friction):</strong><br>
-Comportamentos instáveis no celular e lentidão excessiva elevam a taxa de rejeição silenciosa: o usuário clica no anúncio, mas desiste antes do carregamento completo do site. A verba é consumida pelo clique, sem chance real de conversão.</p>
-
-<h3 style="margin-top:8pt;">Verificações Alternativas de Segurança e Políticas</h3>
-<table>
-  <thead>
-    <tr>
-      <th style="width:30%;">Verificação Executada</th>
-      <th style="width:40%;">Tecnologia Utilizada</th>
-      <th style="width:30%; text-align:center;">Resultado e Status</th>
-    </tr>
-  </thead>
-  <tbody>
-    <?php
-    $adExp = trim($r['ad_experience_status'] ?? '');
-    $adExpLabel = $adExp ?: 'Não verificado';
-    $adExpCor   = $adExp ? corNota(str_contains(strtolower($adExp), 'passing') ? '95' : (str_contains(strtolower($adExp), 'warning') ? '60' : '30')) : '#718096';
-    $adExpBg    = $adExp ? bgNota(str_contains(strtolower($adExp), 'passing') ? '95' : (str_contains(strtolower($adExp), 'warning') ? '60' : '30')) : '#f8fafc';
-
-    $sb = trim($r['safe_browsing_status'] ?? '');
-    $sbLabel = $sb ?: 'Não verificado';
-    $sbCor = $sb ? corNota(str_contains(strtolower($sb), 'nenhuma') ? '95' : '30') : '#718096';
-    $sbBg  = $sb ? bgNota(str_contains(strtolower($sb), 'nenhuma') ? '95' : '30') : '#f8fafc';
-
-    $ap = trim($r['ads_policy_status'] ?? '');
-    $apLabel = $ap ?: 'Não verificado';
-    $apCor = $ap ? corNota(str_contains(strtolower($ap), 'sem restr') ? '95' : '30') : '#718096';
-    $apBg  = $ap ? bgNota(str_contains(strtolower($ap), 'sem restr') ? '95' : '30') : '#f8fafc';
-    ?>
-    <tr>
-      <td style="font-weight:bold;">Ad Experience Standards</td>
-      <td>Google Search Console / Better Ads Standards</td>
-      <td align="center" bgcolor="<?= $adExpBg ?>" style="color:<?= $adExpCor ?>;font-weight:bold;"><?= htmlspecialchars($adExpLabel) ?></td>
-    </tr>
-    <tr>
-      <td style="font-weight:bold;">Google Safe Browsing</td>
-      <td>Transparency Security Report (Filtro Anti-Malware/Phishing)</td>
-      <td align="center" bgcolor="<?= $sbBg ?>" style="color:<?= $sbCor ?>;font-weight:bold;"><?= htmlspecialchars($sbLabel) ?></td>
-    </tr>
-    <tr>
-      <td style="font-weight:bold;">Centro de Políticas Google Ads</td>
-      <td>Auditoria Interna de Anúncios e Restrições de Domínio</td>
-      <td align="center" bgcolor="<?= $apBg ?>" style="color:<?= $apCor ?>;font-weight:bold;"><?= htmlspecialchars($apLabel) ?></td>
-    </tr>
-  </tbody>
-</table>
-
-<?php
-$temAlertaSeg = false;
-$alertasHTML = '';
-
-if ($adExp) {
-    if (str_contains(strtolower($adExp), 'warning')) {
-        $temAlertaSeg = true;
-        $alertasHTML .= '<div style="background:#FFFDF5; border-left:4px solid #D69E2E; padding:8pt; margin-bottom:6pt; border-radius:4px;"><strong style="color:#B7791F; font-size:8.5pt;">⚠️ AD EXPERIENCE REPORT — STATUS DE ATENÇÃO:</strong><span style="display:block; font-size:8pt; color:#4a5568; margin-top:2px;">O Google identificou inconformidades e desvios de layout. Risco alto de bloqueio de anúncios se não for saneado imediatamente.</span></div>';
-    } else if (str_contains(strtolower($adExp), 'failing')) {
-        $temAlertaSeg = true;
-        $alertasHTML .= '<div style="background:#FFF5F5; border-left:4px solid #E53E3E; padding:8pt; margin-bottom:6pt; border-radius:4px;"><strong style="color:#C53030; font-size:8.5pt;">🛑 AD EXPERIENCE REPORT — REPROVAÇÃO CRÍTICA:</strong><span style="display:block; font-size:8pt; color:#4a5568; margin-top:2px;">BLOQUEIO ATIVO DE ANÚNCIOS. O site foi banido pelo Google Search Console. Campanhas ativas não conseguem rodar tráfego para este domínio.</span></div>';
-    }
-}
-
-if ($sb) {
-    if (str_contains(strtolower($sb), 'parcialmente')) {
-        $temAlertaSeg = true;
-        $alertasHTML .= '<div style="background:#FFFDF5; border-left:4px solid #D69E2E; padding:8pt; margin-bottom:6pt; border-radius:4px;"><strong style="color:#B7791F; font-size:8.5pt;">⚠️ GOOGLE SAFE BROWSING — PARCIALMENTE PERIGOSO:</strong><span style="display:block; font-size:8pt; color:#4a5568; margin-top:2px;">Foram detectados trechos ou scripts nocivos parciais. Campanhas sofrem restrição de tráfego orgânico e pago.</span></div>';
-    } else if (str_contains(strtolower($sb), 'lista negra') || str_contains(strtolower($sb), 'perigoso')) {
-        $temAlertaSeg = true;
-        $alertasHTML .= '<div style="background:#FFF5F5; border-left:4px solid #E53E3E; padding:8pt; margin-bottom:6pt; border-radius:4px;"><strong style="color:#C53030; font-size:8.5pt;">🛑 GOOGLE SAFE BROWSING — DOMÍNIO EM LISTA NEGRA:</strong><span style="display:block; font-size:8pt; color:#4a5568; margin-top:2px;">RISCO MÁXIMO DE SEGURANÇA. O domínio está categorizado como distribuidor de malware/phishing. O Chrome exibe uma tela de bloqueio vermelha impeditiva aos visitantes e o Google Ads cancela as veiculações e suspende as contas vinculadas.</span></div>';
-    }
-}
-
-if ($ap) {
-    if (str_contains(strtolower($ap), 'restrição')) {
-        $temAlertaSeg = true;
-        $alertasHTML .= '<div style="background:#FFFDF5; border-left:4px solid #D69E2E; padding:8pt; margin-bottom:6pt; border-radius:4px;"><strong style="color:#B7791F; font-size:8.5pt;">⚠️ GOOGLE ADS — ANÚNCIOS COM RESTRIÇÃO DE ALCANCE:</strong><span style="display:block; font-size:8pt; color:#4a5568; margin-top:2px;">Existem problemas técnicos ou de política limitando a entrega dos seus anúncios. O CPC encarece drasticamente e o ROI da campanha despenca.</span></div>';
-    } else if (str_contains(strtolower($ap), 'reprovado')) {
-        $temAlertaSeg = true;
-        $alertasHTML .= '<div style="background:#FFF5F5; border-left:4px solid #E53E3E; padding:8pt; margin-bottom:6pt; border-radius:4px;"><strong style="color:#C53030; font-size:8.5pt;">🛑 GOOGLE ADS — ANÚNCIOS REPROVADOS POR POLÍTICA:</strong><span style="display:block; font-size:8pt; color:#4a5568; margin-top:2px;">Anúncios ativos foram recusados pelo robô do Google Ads devido a violações graves na página de destino. O canal de aquisição de vendas pago está interrompido.</span></div>';
-    } else if (str_contains(strtolower($ap), 'suspensa')) {
-        $temAlertaSeg = true;
-        $alertasHTML .= '<div style="background:#FFF5F5; border-left:4px solid #E53E3E; padding:8pt; margin-bottom:6pt; border-radius:4px;"><strong style="color:#C53030; font-size:8.5pt;">🚨 GOOGLE ADS — CONTA SUSPENSA DE FORMA GRAVE:</strong><span style="display:block; font-size:8pt; color:#4a5568; margin-top:2px;">SUSPENSÃO MÁXIMA. Toda a estrutura de marketing de busca do cliente foi banida pelo Google Ads. Campanhas pausadas por tempo indeterminado até a readequação do site e aprovação da apelação técnica.</span></div>';
-    }
-}
-?>
-
-<?php if ($temAlertaSeg): ?>
-  <div style="background:#FEE2E2; border:1px solid #FCA5A5; border-radius:6px; padding:10pt 12pt; margin-top:10pt; margin-bottom:12pt;">
-    <h3 style="color:#991B1B; font-size:9.5pt; font-weight:bold; margin-top:0; margin-bottom:6pt; text-transform:uppercase;">Alerta Estratégico: Riscos Críticos de Segurança e Bloqueios Financeiros</h3>
-    <p style="font-size:8pt; line-height:1.4; color:#7F1D1D; margin-bottom:8pt;">As falhas de conformidade identificadas abaixo agem como um gargalo destrutivo para a captação de clientes. Sites com restrições de segurança ou em desconformidade de anúncios perdem verba de mídia instantaneamente e correm o risco iminente de suspensão permanente da conta de marketing:</p>
-    <?= $alertasHTML ?>
-    <div style="margin-top:6pt; border-top:1px dashed #FCA5A5; padding-top:6pt; font-size:7.5pt; color:#7F1D1D; text-align:justify;">
-      <strong>Recomendação Técnica:</strong> É imperativo proceder com o saneamento de segurança e readequação de layout de acordo com os manuais de política do Google. A equipe da <strong>Rajo Desenvolvimento</strong> está homologada para conduzir a auditoria fina de código e o protocolo de liberação junto aos times de suporte do Google.
-    </div>
-  </div>
-<?php endif; ?>
-
-<?php
-$inv = (float)($r['ads_investimento'] ?? 0);
-$cpc = (float)($r['ads_cpc'] ?? 0);
-if ($inv > 0 && $cpc > 0):
-    $P = (int)($r['ps_performance_mobile'] ?? 35);
-    if ($P >= 90) {
-        $D = 3;
-    } else if ($P >= 50) {
-        $D = 30 - 0.3 * $P;
-    } else {
-        $D = 65 - 0.7 * $P;
-    }
-    $D = max(0, min(100, $D));
-    $prejuizo = $inv * ($D / 100);
-    $cliquesPerdidos = $cpc > 0 ? round($prejuizo / $cpc) : 0;
-    $aproveitado = $inv - $prejuizo;
-    $nicho_nome = match($r['ads_nicho'] ?? '') {
-        'advocacia' => 'Advocacia / Jurídico',
-        'saude' => 'Saúde / Clínicas / Dentistas',
-        'estetica' => 'Estética / Beleza',
-        'ecommerce' => 'E-commerce / Varejo',
-        'educacao' => 'Educação / Cursos',
-        'tecnologia' => 'SaaS / Tecnologia / B2B',
-        'imobiliario' => 'Imobiliário / Corretores',
-        'financas' => 'Finanças / Investimentos',
-        'contabilidade' => 'Contabilidade / Assessoria',
-        'turismo' => 'Turismo / Hotelaria',
-        'automotivo' => 'Automotivo / Concessionárias',
-        'gastronomia' => 'Gastronomia / Restaurantes',
-        'servicos_locais' => 'Serviços Locais (Urgência)',
-        default => 'Serviços Gerais / Outro'
-    };
-?>
-<div class="page-break"></div>
-<h1>Simulação de Impacto Financeiro em Anúncios (Google Ads)</h1>
-<p>Abaixo apresentamos uma simulação técnica baseada no desempenho mobile do site (velocidade de carregamento móvel), revelando o prejuízo estimado em mídia paga devido à lentidão e rejeição de tráfego:</p>
-
-<div style="background:#FFF5F5; border-left:5px solid #E53E3E; padding:10pt 12pt; margin-bottom:12pt; border-radius:6px;">
-  <table width="100%" style="border:none; margin:0;">
-    <tr style="border:none;">
-      <td style="border:none; padding:0; width:70%; vertical-align:top;">
-        <strong style="color:#C53030; font-size:10.5pt; text-transform:uppercase;">🚨 Alerta de Desperdício de Verba de Marketing</strong><br>
-        <p style="margin:4pt 0 0 0; font-size:8.5pt; color:#2d3748; line-height:1.45;">
-          Devido ao tempo de carregamento insatisfatório nos dispositivos móveis (nota de performance móvel de <strong><?= $P ?>/100</strong>), estima-se que <strong><?= round($D) ?>%</strong> do seu orçamento de anúncios esteja sendo desperdiçado em cliques de usuários que abandonam o site antes do carregamento da página.
+      <td style="border:none; padding:0; width:65%; vertical-align:top;">
+        <p style="font-size:8.5pt; color:#4a5568; margin:0; line-height:1.5;">
+          Com base na velocidade de carregamento no celular (nota <?= $P ?>/100), estima-se que <strong style="color:#c53030;"><?= round($D) ?>% do seu orçamento</strong> em anúncios está sendo desperdiçado — cliques são cobrados, mas os usuários abandonam o site antes de ver sua oferta.
         </p>
+        <div style="margin-top:8pt; font-size:8pt; color:#718096;">
+          Investimento mensal: R$ <?= number_format($inv, 2, ',', '.') ?> &nbsp;&bull;&nbsp;
+          Aproveitado efetivamente: <strong style="color:#2E7D32;">R$ <?= number_format($aproveitado, 2, ',', '.') ?></strong>
+        </div>
       </td>
-      <td style="border:none; padding:0; width:30%; text-align:right; vertical-align:middle;">
-        <div style="background:#fff; border:2px solid #E53E3E; padding:6pt 8pt; border-radius:6px; text-align:center;">
-          <span style="font-size:7pt; color:#718096; text-transform:uppercase; font-weight:bold;">Perda Mensal</span><br>
-          <strong style="font-size:12pt; color:#E53E3E; font-weight:900;">R$ <?= number_format($prejuizo, 2, ',', '.') ?></strong>
+      <td style="border:none; padding:0 0 0 16pt; width:35%; text-align:center; vertical-align:middle;">
+        <div style="background:#fff; border:2px solid #e53e3e; border-radius:8px; padding:10pt;">
+          <div style="font-size:8pt; color:#718096; text-transform:uppercase; font-weight:bold; margin-bottom:3pt;">Perda Estimada / Mês</div>
+          <div style="font-size:20pt; font-weight:900; color:#e53e3e; line-height:1.1;">R$ <?= number_format($prejuizo, 2, ',', '.') ?></div>
+          <div style="font-size:7.5pt; color:#e53e3e; margin-top:2pt;"><?= number_format($cliquesPerdidos) ?> cliques perdidos</div>
         </div>
       </td>
     </tr>
   </table>
 </div>
-
-<table style="width:100%; border-collapse:collapse; margin-bottom:12pt;">
-  <thead>
-    <tr>
-      <th colspan="2" bgcolor="<?= $AZUL ?>" style="color:#fff; font-weight:bold; font-size:8.5pt; text-transform:uppercase; padding:5pt 6pt;">Métricas de Simulação de Ads</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td style="width:50%; font-weight:bold; font-size:8.5pt;">Nicho de Atuação Declarado:</td>
-      <td style="font-size:8.5pt; color:#2d3748;"><?= htmlspecialchars($nicho_nome) ?></td>
-    </tr>
-    <tr>
-      <td style="font-weight:bold; font-size:8.5pt;">Investimento Mensal Estimado em Anúncios:</td>
-      <td style="font-size:8.5pt; font-weight:bold; color:<?= $AZUL ?>;">R$ <?= number_format($inv, 2, ',', '.') ?> / mês</td>
-    </tr>
-    <tr>
-      <td style="font-weight:bold; font-size:8.5pt;">Custo por Clique (CPC) Médio Recomendado:</td>
-      <td style="font-size:8.5pt; color:#2d3748;">R$ <?= number_format($cpc, 2, ',', '.') ?></td>
-    </tr>
-    <tr>
-      <td style="font-weight:bold; font-size:8.5pt;">Média de Cliques Adquiridos Mensalmente:</td>
-      <td style="font-size:8.5pt; color:#2d3748;"><?= number_format(round($inv / $cpc)) ?> cliques</td>
-    </tr>
-    <tr bgcolor="#FDECEA">
-      <td style="font-weight:bold; font-size:8.5pt; color:#C53030;">Perda Estimada por Lentidão Mobile (<?= round($D) ?>%):</td>
-      <td style="font-size:8.5pt; font-weight:bold; color:#C53030;">R$ <?= number_format($prejuizo, 2, ',', '.') ?> / mês</td>
-    </tr>
-    <tr bgcolor="#FDECEA">
-      <td style="font-weight:bold; font-size:8.5pt; color:#C53030;">Cliques Desperdiçados (Sem Carregamento):</td>
-      <td style="font-size:8.5pt; font-weight:bold; color:#C53030;"><?= number_format($cliquesPerdidos) ?> cliques perdidos / mês</td>
-    </tr>
-    <tr bgcolor="#EDF7EE">
-      <td style="font-weight:bold; font-size:8.5pt; color:#2E7D32;">Orçamento Efetivamente Aproveitado:</td>
-      <td style="font-size:8.5pt; font-weight:bold; color:#2E7D32;">R$ <?= number_format($aproveitado, 2, ',', '.') ?> / mês</td>
-    </tr>
-  </tbody>
-</table>
-
-<p style="font-size:8.2pt; line-height:1.4; text-align:justify; color:#4a5568;">
-  <strong>Conclusão Técnica sobre Anúncios:</strong> O algoritmo do Google Ads avalia a qualidade da sua landing page como um dos fatores mais pesados no Índice de Qualidade do anúncio. Sites lentos são punidos com um CPC (Custo por Clique) muito mais caro do que o dos seus concorrentes diretos. Ao otimizar o tempo de carregamento para a faixa verde (acima de 90), além de eliminar a perda imediata de R$ <?= number_format($prejuizo, 2, ',', '.') ?> por abandono de página, o Índice de Qualidade do seu domínio tende a subir, permitindo que a <strong>Rajo</strong> reduza o seu CPC real e gere muito mais cliques qualificados pelo mesmo valor investido.
-</p>
 <?php endif; ?>
 
-<!-- ═══════════════════════ SEÇÃO 5 — PLANO E CONCLUSÃO ════════════════ -->
+
+<!-- ═══════════════════════ INDICADORES TÉCNICOS ═══════════════════════ -->
 <div class="page-break"></div>
-<h1>5. Planejamento Tático e Resolução Técnica</h1>
-<p>Abaixo estruturamos a matriz de responsabilidades e as intervenções necessárias no código e arquitetura da landing page:</p>
 
-<?php if ($bloquear): ?>
-  <div class="box-warn" style="background:#fffdf5; border-left:4px solid #d97706; padding:10pt; margin-bottom:12pt; border-radius:4px;">
-    <strong style="color:#b45309; font-size:9.5pt;">🔒 CRONOGRAMA TÉCNICO DE RESOLUÇÃO RESTRITO (MÉTODO PROTEGIDO)</strong><br>
-    <p style="margin:4pt 0 0 0; font-size:8.5pt; color:#4a5568; line-height:1.4;">
-      Para resguardar nossa propriedade intelectual de engenharia e garantir a correta homologação do site junto ao Google, o detalhamento das diretivas de código e parâmetros exatos de otimização estão <strong>temporariamente reservados e protegidos comercialmente</strong>.
-      <br><br>
-      As tarefas macro estão listadas abaixo com a respectiva sinalização de complexidade. Contrate os serviços técnicos especializados da <strong>Rajo Desenvolvimento</strong> para destravar o roteiro completo e executar a regularização imediata do site.
-    </p>
-  </div>
-<?php endif; ?>
+<div class="section-header">
+  <div class="section-num">Seção 04</div>
+  <h1>Indicadores Técnicos</h1>
+</div>
 
-<?php if (!empty($acoes)): ?>
-<table>
+<!-- Core Web Vitals -->
+<?php
+$cwv_rows = [
+    ['lcp',   'LCP',   'Renderização do Maior Elemento', '&lt; 2,5 s'],
+    ['inp',   'INP',   'Velocidade de Resposta ao Clique', '&lt; 200 ms'],
+    ['cls',   'CLS',   'Estabilidade Visual da Página', '&lt; 0,1'],
+    ['fcp',   'FCP',   'Tempo até Primeiro Conteúdo Visível', '&lt; 1,8 s'],
+    ['ttfb',  'TTFB',  'Tempo de Resposta do Servidor', '&lt; 600 ms'],
+    ['speed', 'Speed', 'Velocidade Visual Geral', '&lt; 3,4 s'],
+];
+$cwvTemDados = false;
+foreach ($cwv_rows as [$key]) {
+    if (!empty($r["cwv_{$key}_desktop"]) || !empty($r["cwv_{$key}_mobile"])) { $cwvTemDados = true; break; }
+}
+if ($cwvTemDados):
+?>
+<h2 style="margin-bottom:8pt;">Velocidade e Experiência do Usuário (Core Web Vitals)</h2>
+<p>Métricas que o Google usa para avaliar a qualidade da experiência de navegação. Baixo desempenho aqui aumenta o custo de anúncios e reduz o posicionamento orgânico.</p>
+
+<table style="margin-bottom:16pt;">
   <thead>
     <tr>
-      <th style="width:55%">Intervenção Estrutural Sugerida</th>
-      <th style="width:23%">Responsabilidade Executiva</th>
-      <th style="width:22%" align="center">Prazo Recomendado</th>
+      <th style="width:10%; text-align:center;">Sigla</th>
+      <th style="width:38%;">O que mede</th>
+      <th style="width:14%; text-align:center;">Meta</th>
+      <th style="width:14%; text-align:center;">Desktop</th>
+      <th style="width:14%; text-align:center;">Mobile</th>
+      <th style="width:10%; text-align:center;">Status</th>
     </tr>
   </thead>
   <tbody>
-    <?php foreach ($acoes as $acao): ?>
+    <?php foreach ($cwv_rows as [$key, $sigla, $nome, $ref]):
+      $status = $r["cwv_{$key}_status"] ?? '';
+      $desk   = cwv_val((string)($r["cwv_{$key}_desktop"] ?? ''));
+      $mob    = cwv_val((string)($r["cwv_{$key}_mobile"]  ?? ''));
+      if ($desk === '–' && $mob === '–') continue;
+    ?>
     <tr>
-      <td style="font-weight:500; font-size:8pt; line-height:1.4;"><?= ofuscarAcao($acao['acao'], $bloquear) ?></td>
-      <td style="color:#4a5568; font-size:8pt;"><?= htmlspecialchars($acao['responsavel']) ?></td>
-      <td align="center" bgcolor="<?= $AZUL2 ?>" style="color:<?= $AZUL ?>; font-weight:bold; font-size:8pt;">
-        <?= htmlspecialchars($acao['prazo']) ?>
-      </td>
+      <td bgcolor="<?= $AZUL2 ?>" style="color:<?= $AZUL ?>;font-weight:bold;text-align:center;font-size:8pt;"><?= $sigla ?></td>
+      <td style="font-size:8pt;"><?= $nome ?></td>
+      <td style="color:#2E7D32;font-weight:bold;text-align:center;font-size:8pt;"><?= $ref ?></td>
+      <td align="center" style="font-weight:bold;font-size:8.5pt;"><?= $desk ?></td>
+      <td align="center" style="font-weight:bold;font-size:8.5pt;"><?= $mob ?></td>
+      <?php if ($status !== ''): ?>
+      <td align="center" bgcolor="<?= bgStatus($status) ?>" style="color:<?= corStatus($status) ?>;font-weight:bold;font-size:8pt;"><?= htmlspecialchars($status) ?></td>
+      <?php else: ?>
+      <td align="center" style="color:#718096;font-size:8pt;">—</td>
+      <?php endif; ?>
     </tr>
     <?php endforeach; ?>
   </tbody>
 </table>
-<?php else: ?>
-<div class="box-warn">Nenhuma ação registrada no plano de ação.</div>
 <?php endif; ?>
 
-<h2 style="margin-top:10pt;">6. Parecer Técnico e Conclusão Geral</h2>
+<!-- Infraestrutura e Segurança -->
+<?php if ($geo || $seg || $dns || $r['auditoria_cms']): ?>
+<h2 style="margin-bottom:8pt; margin-top:6pt;">Infraestrutura e Segurança</h2>
 
+<table style="margin-bottom:16pt;">
+  <thead>
+    <tr>
+      <th style="width:28%;">Item Verificado</th>
+      <th style="width:48%;">Resultado</th>
+      <th style="width:24%; text-align:center;">Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <?php if (!empty($r['auditoria_cms'])): ?>
+    <tr>
+      <td style="font-weight:bold;">Plataforma do Site</td>
+      <td>Sistema de gerenciamento utilizado para construir e administrar o site.</td>
+      <td align="center" bgcolor="<?= $r['auditoria_cms'] !== 'Não Identificado' ? '#EDF7EE' : '#FFF9E6' ?>" style="color:<?= $r['auditoria_cms'] !== 'Não Identificado' ? '#2E7D32' : '#E65100' ?>; font-weight:bold;">
+        <?= htmlspecialchars($r['auditoria_cms']) ?>
+      </td>
+    </tr>
+    <?php endif; ?>
+
+    <?php if ($geo): ?>
+    <tr>
+      <td style="font-weight:bold;">Hospedagem &amp; Servidor</td>
+      <td>
+        Provedor: <strong><?= htmlspecialchars($geo['provedor']) ?></strong><br>
+        Localização: <?= htmlspecialchars($geo['cidade'] ?? '') ?><?= !empty($geo['cidade']) ? ', ' : '' ?><?= htmlspecialchars($geo['pais'] ?? '') ?>
+      </td>
+      <td align="center" bgcolor="#EDF7EE" style="color:#2E7D32; font-weight:bold;">✓ Mapeado</td>
+    </tr>
+    <?php endif; ?>
+
+    <?php if ($seg): ?>
+    <tr>
+      <td style="font-weight:bold;">Certificado de Segurança (SSL)</td>
+      <td>
+        <?= $seg['ssl_ativo'] ? 'Certificado ativo — conexão criptografada e segura para os visitantes.' : 'Certificado inativo — visitantes veem aviso de "site não seguro".' ?>
+        <?php if ($seg['ssl_ativo']): ?>
+          <br><span style="font-size:8pt; color:#718096;">Proteções adicionais ativas: <?= $segAtivos ?> de 5</span>
+        <?php endif; ?>
+      </td>
+      <td align="center" bgcolor="<?= $seg['ssl_ativo'] ? ($segAtivos >= 2 ? '#EDF7EE' : '#FFF9E6') : '#FDECEA' ?>" style="color:<?= $seg['ssl_ativo'] ? ($segAtivos >= 2 ? '#2E7D32' : '#E65100') : '#D32F2F' ?>; font-weight:bold;">
+        <?= $seg['ssl_ativo'] ? ($segAtivos >= 2 ? '✓ Seguro' : '⚠ Básico') : '✗ Inativo' ?>
+      </td>
+    </tr>
+    <?php endif; ?>
+
+    <?php if ($dns): ?>
+    <tr>
+      <td style="font-weight:bold;">Proteção de E-mail (Anti-Spam)</td>
+      <td>
+        SPF: <strong><?= $dns['spf_valido'] ? 'Configurado' : 'Ausente' ?></strong> &nbsp;&bull;&nbsp;
+        DMARC: <strong><?= $dns['dmarc_valido'] ? 'Configurado' : 'Ausente' ?></strong><br>
+        <span style="font-size:8pt; color:#718096;">Protege o domínio contra uso indevido em e-mails falsos (phishing).</span>
+      </td>
+      <td align="center" bgcolor="<?= ($dns['spf_valido'] && $dns['dmarc_valido']) ? '#EDF7EE' : (($dns['spf_valido'] || $dns['dmarc_valido']) ? '#FFF9E6' : '#FDECEA') ?>" style="color:<?= ($dns['spf_valido'] && $dns['dmarc_valido']) ? '#2E7D32' : (($dns['spf_valido'] || $dns['dmarc_valido']) ? '#E65100' : '#D32F2F') ?>; font-weight:bold;">
+        <?= ($dns['spf_valido'] && $dns['dmarc_valido']) ? '✓ Protegido' : (($dns['spf_valido'] || $dns['dmarc_valido']) ? '⚠ Parcial' : '✗ Exposto') ?>
+      </td>
+    </tr>
+    <?php endif; ?>
+  </tbody>
+</table>
+<?php endif; ?>
+
+<!-- Conformidade Google Ads -->
+<?php if ($adExp || $sb || $ap): ?>
+<h2 style="margin-bottom:8pt; margin-top:6pt;">Conformidade com Google Ads</h2>
+<table style="margin-bottom:16pt;">
+  <thead>
+    <tr>
+      <th style="width:30%;">Verificação</th>
+      <th style="width:45%;">O que significa</th>
+      <th style="width:25%; text-align:center;">Resultado</th>
+    </tr>
+  </thead>
+  <tbody>
+    <?php if ($adExp):
+      $adExpCor = str_contains(strtolower($adExp), 'passing') ? '#2E7D32' : (str_contains(strtolower($adExp), 'warning') ? '#E65100' : '#D32F2F');
+      $adExpBg  = str_contains(strtolower($adExp), 'passing') ? '#EDF7EE' : (str_contains(strtolower($adExp), 'warning') ? '#FFF9E6' : '#FDECEA');
+    ?>
+    <tr>
+      <td style="font-weight:bold;">Experiência de Anúncios</td>
+      <td style="font-size:8.5pt; color:#475569;">Avaliação do Google sobre a qualidade da experiência do usuário com os anúncios exibidos no site.</td>
+      <td align="center" bgcolor="<?= $adExpBg ?>" style="color:<?= $adExpCor ?>; font-weight:bold; font-size:8.5pt;"><?= htmlspecialchars($adExp) ?></td>
+    </tr>
+    <?php endif; ?>
+    <?php if ($sb):
+      $sbCor = str_contains(strtolower($sb), 'nenhuma') ? '#2E7D32' : (str_contains(strtolower($sb), 'parcialmente') ? '#E65100' : '#D32F2F');
+      $sbBg  = str_contains(strtolower($sb), 'nenhuma') ? '#EDF7EE' : (str_contains(strtolower($sb), 'parcialmente') ? '#FFF9E6' : '#FDECEA');
+    ?>
+    <tr>
+      <td style="font-weight:bold;">Navegação Segura</td>
+      <td style="font-size:8.5pt; color:#475569;">Verificação se o domínio está na lista de sites perigosos do Google (malware, phishing).</td>
+      <td align="center" bgcolor="<?= $sbBg ?>" style="color:<?= $sbCor ?>; font-weight:bold; font-size:8.5pt;"><?= htmlspecialchars($sb) ?></td>
+    </tr>
+    <?php endif; ?>
+    <?php if ($ap):
+      $apCor = str_contains(strtolower($ap), 'sem restr') ? '#2E7D32' : (str_contains(strtolower($ap), 'restrição') ? '#E65100' : '#D32F2F');
+      $apBg  = str_contains(strtolower($ap), 'sem restr') ? '#EDF7EE' : (str_contains(strtolower($ap), 'restrição') ? '#FFF9E6' : '#FDECEA');
+    ?>
+    <tr>
+      <td style="font-weight:bold;">Políticas do Google Ads</td>
+      <td style="font-size:8.5pt; color:#475569;">Status de conformidade com as políticas de publicidade do Google para este domínio.</td>
+      <td align="center" bgcolor="<?= $apBg ?>" style="color:<?= $apCor ?>; font-weight:bold; font-size:8.5pt;"><?= htmlspecialchars($ap) ?></td>
+    </tr>
+    <?php endif; ?>
+  </tbody>
+</table>
+
+<?php
+// Alertas críticos de ads
+$alertasHTML = '';
+if ($adExp && str_contains(strtolower($adExp), 'failing')) {
+    $alertasHTML .= '<div class="alert-danger" style="margin-bottom:8pt;"><strong style="color:#c53030;">Bloqueio de Anúncios Ativo:</strong><span style="display:block; font-size:8.5pt; color:#4a5568; margin-top:3pt; line-height:1.5;">O Google identificou problemas graves na experiência do site. As campanhas de anúncios não estão sendo exibidas neste domínio.</span></div>';
+} elseif ($adExp && str_contains(strtolower($adExp), 'warning')) {
+    $alertasHTML .= '<div class="alert-warn" style="margin-bottom:8pt;"><strong style="color:#b7791f;">Alerta de Experiência de Anúncios:</strong><span style="display:block; font-size:8.5pt; color:#4a5568; margin-top:3pt; line-height:1.5;">O Google identificou problemas na experiência do site. Risco de bloqueio de anúncios se não corrigido.</span></div>';
+}
+if ($sb && (str_contains(strtolower($sb), 'lista negra') || str_contains(strtolower($sb), 'perigoso'))) {
+    $alertasHTML .= '<div class="alert-danger" style="margin-bottom:8pt;"><strong style="color:#c53030;">Domínio em Lista de Risco:</strong><span style="display:block; font-size:8.5pt; color:#4a5568; margin-top:3pt; line-height:1.5;">O site foi marcado como potencialmente perigoso pelo Google. O Chrome exibe aviso de bloqueio para visitantes e os anúncios são automaticamente suspensos.</span></div>';
+}
+if ($ap && str_contains(strtolower($ap), 'suspensa')) {
+    $alertasHTML .= '<div class="alert-danger" style="margin-bottom:8pt;"><strong style="color:#c53030;">Conta do Google Ads Suspensa:</strong><span style="display:block; font-size:8.5pt; color:#4a5568; margin-top:3pt; line-height:1.5;">Toda a estrutura de anúncios pagos foi bloqueada pelo Google. É necessária intervenção técnica especializada para reativação.</span></div>';
+}
+echo $alertasHTML;
+?>
+<?php endif; ?>
+
+
+<!-- ═══════════════════════ COMPARATIVO VISUAL ═══════════════════════ -->
+<?php if ($temComparativo): ?>
+<div style="margin-top:14pt;"></div>
+
+<div class="section-header">
+  <div class="section-num">Seção 05</div>
+  <h1>Situação Atual x Potencial de Melhoria</h1>
+</div>
+
+<p>Veja o que é possível alcançar após a implementação das melhorias recomendadas:</p>
+
+<table style="margin-bottom:16pt;">
+  <thead>
+    <tr>
+      <th style="width:30%;">Indicador</th>
+      <th style="width:30%; text-align:center; background:#fee2e2; color:#991b1b;">Situação Atual</th>
+      <th style="width:10%; text-align:center; background:#f8fafc; color:#64748b;"></th>
+      <th style="width:30%; text-align:center; background:#dcfce7; color:#166534;">Após Otimização</th>
+    </tr>
+  </thead>
+  <tbody>
+    <?php
+    $comparativos = [];
+    if (!empty($r['ps_performance_desktop']) && is_numeric($r['ps_performance_desktop'])) {
+        $v = (int)$r['ps_performance_desktop'];
+        if ($v < 90) $comparativos[] = ['Performance Desktop', $v, '90+', $v < 50 ? '#D32F2F' : '#E65100'];
+    }
+    if (!empty($r['ps_performance_mobile']) && is_numeric($r['ps_performance_mobile'])) {
+        $v = (int)$r['ps_performance_mobile'];
+        if ($v < 90) $comparativos[] = ['Performance Mobile', $v, '90+', $v < 50 ? '#D32F2F' : '#E65100'];
+    }
+    if (!empty($r['ps_seo_desktop']) && is_numeric($r['ps_seo_desktop'])) {
+        $v = (int)$r['ps_seo_desktop'];
+        if ($v < 90) $comparativos[] = ['SEO Técnico', $v, '95+', $v < 50 ? '#D32F2F' : '#E65100'];
+    }
+    if ($seg && !$seg['ssl_ativo']) {
+        $comparativos[] = ['Segurança SSL', 'Inativo', 'Ativo', '#D32F2F'];
+    }
+    if ($dns && (!$dns['spf_valido'] || !$dns['dmarc_valido'])) {
+        $comparativos[] = ['Proteção de E-mail', 'Vulnerável', 'Protegido', '#E65100'];
+    }
+    if ($temAds && $D > 5) {
+        $comparativos[] = ['Aproveitamento de Ads', round(100 - $D) . '%', '97%+', $D > 30 ? '#D32F2F' : '#E65100'];
+    }
+
+    foreach ($comparativos as [$ind, $atual, $meta, $corAtual]):
+    ?>
+    <tr>
+      <td style="font-weight:bold; font-size:8.5pt;"><?= htmlspecialchars($ind) ?></td>
+      <td align="center" bgcolor="#fff5f5" style="color:<?= $corAtual ?>; font-weight:bold; font-size:11pt;"><?= is_int($atual) ? $atual : htmlspecialchars($atual) ?></td>
+      <td align="center" style="color:#94a3b8; font-size:14pt; font-weight:bold;">→</td>
+      <td align="center" bgcolor="#f0fff4" style="color:#2E7D32; font-weight:bold; font-size:11pt;"><?= htmlspecialchars($meta) ?></td>
+    </tr>
+    <?php endforeach; ?>
+    <?php if (empty($comparativos)): ?>
+    <tr>
+      <td colspan="4" align="center" style="color:#2E7D32; font-weight:bold; padding:12pt;">
+        ✓ Site já está em excelente situação!
+      </td>
+    </tr>
+    <?php endif; ?>
+  </tbody>
+</table>
+
+<div class="alert-info" style="margin-bottom:16pt;">
+  <strong style="color:<?= $AZUL ?>;">O que essas melhorias representam para o seu negócio:</strong>
+  <p style="font-size:8.5pt; color:#475569; margin:4pt 0 0 0; line-height:1.5;">Sites com alta performance recebem mais visitantes do Google de forma orgânica, têm menor custo por clique em anúncios, e convertem mais porque oferecem uma experiência de navegação superior. Cada ponto de melhoria no score representa uma vantagem competitiva direta.</p>
+</div>
+<?php endif; ?>
+
+
+<!-- ═══════════════════════ PLANO DE AÇÃO ═══════════════════════ -->
+<?php if (!empty($acoes)): ?>
+<div class="page-break"></div>
+
+<div class="section-header">
+  <div class="section-num">Seção <?= $temComparativo ? '06' : '05' ?></div>
+  <h1>Plano de Ação Recomendado</h1>
+</div>
+
+<?php if ($bloquear): ?>
+<div class="alert-warn" style="margin-bottom:14pt;">
+  <strong style="color:#b45309;">Cronograma Técnico Protegido</strong>
+  <p style="font-size:8.5pt; color:#4a5568; margin:4pt 0 0 0; line-height:1.5;">Para garantir a correta execução e proteger a metodologia proprietária, os detalhamentos técnicos completos são disponibilizados exclusivamente após contratação dos serviços da <strong>Rajo Desenvolvimento</strong>.</p>
+</div>
+<?php endif; ?>
+
+<table style="margin-bottom:16pt;">
+  <thead>
+    <tr>
+      <th style="width:38%;">Ação Recomendada</th>
+      <th style="width:28%;">Benefício Esperado</th>
+      <th style="width:16%;">Responsável</th>
+      <th style="width:10%; text-align:center;">Prazo</th>
+      <th style="width:8%; text-align:center;">Prior.</th>
+    </tr>
+  </thead>
+  <tbody>
+    <?php foreach ($acoes as $i => $acao):
+      $pri = strtolower(trim($acao['prioridade'] ?? 'alta'));
+      if ($pri === 'alta')      { $priCor = '#D32F2F'; $priBg = '#FDECEA'; $priLabel = 'Alta'; }
+      elseif ($pri === 'média') { $priCor = '#E65100'; $priBg = '#FFF9E6'; $priLabel = 'Média'; }
+      else                      { $priCor = '#2E7D32'; $priBg = '#EDF7EE'; $priLabel = 'Baixa'; }
+
+      // Gerar benefício automaticamente se não houver campo dedicado
+      $beneficio = $acao['beneficio'] ?? '';
+      if (empty($beneficio)) {
+          $ac = mb_strtolower($acao['acao'] ?? '');
+          if (str_contains($ac, 'performance') || str_contains($ac, 'velocidade') || str_contains($ac, 'otimiz')) {
+              $beneficio = 'Redução do custo por clique e maior aproveitamento do orçamento de anúncios.';
+          } elseif (str_contains($ac, 'seo') || str_contains($ac, 'meta')) {
+              $beneficio = 'Melhor posicionamento no Google e aumento do tráfego orgânico.';
+          } elseif (str_contains($ac, 'ssl') || str_contains($ac, 'segurança')) {
+              $beneficio = 'Aumento da confiança dos visitantes e conformidade com o Google.';
+          } elseif (str_contains($ac, 'analytics') || str_contains($ac, 'pixel') || str_contains($ac, 'gtm')) {
+              $beneficio = 'Dados precisos para otimização de campanhas e medição de ROI.';
+          } else {
+              $beneficio = 'Melhoria da experiência do usuário e do desempenho geral.';
+          }
+      }
+    ?>
+    <tr>
+      <td style="font-size:8.5pt; font-weight:500; line-height:1.4;"><?= ofuscarAcao($acao['acao'], $bloquear) ?></td>
+      <td style="font-size:8pt; color:#475569; line-height:1.4;"><?= htmlspecialchars($beneficio) ?></td>
+      <td style="font-size:8.5pt; color:#4a5568;"><?= htmlspecialchars($acao['responsavel'] ?? '—') ?></td>
+      <td align="center" bgcolor="<?= $AZUL2 ?>" style="color:<?= $AZUL ?>; font-weight:bold; font-size:8pt; white-space:nowrap;"><?= htmlspecialchars($acao['prazo'] ?? '—') ?></td>
+      <td align="center" bgcolor="<?= $priBg ?>" style="color:<?= $priCor ?>; font-weight:bold; font-size:7.5pt;"><?= $priLabel ?></td>
+    </tr>
+    <?php endforeach; ?>
+  </tbody>
+</table>
+<?php endif; ?>
+
+
+<!-- ═══════════════════════ PARECER EXECUTIVO ═══════════════════════ -->
 <?php if ($r['conclusao']): ?>
+<div style="margin-top:14pt;"></div>
+
+<div class="section-header">
+  <div class="section-num">Seção <?= $temComparativo ? (!empty($acoes) ? '07' : '06') : (!empty($acoes) ? '06' : '05') ?></div>
+  <h1>Parecer Executivo</h1>
+</div>
+
+<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:16pt 20pt; margin-bottom:16pt;">
+  <div style="font-size:8.5pt; font-weight:bold; color:<?= $AZUL ?>; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10pt; border-bottom:1px solid #e2e8f0; padding-bottom:6pt;">
+    Análise e Recomendação — <?= htmlspecialchars($r['analista']) ?>
+  </div>
   <?php foreach (explode("\n\n", $r['conclusao']) as $para): ?>
-  <p style="text-align:justify; line-height:1.45; margin-bottom:6pt; font-size:8.5pt; color:#2d3748;"><?= nl2br(htmlspecialchars(trim($para))) ?></p>
+  <p style="text-align:justify; line-height:1.55; margin-bottom:8pt; font-size:9pt; color:#334155;"><?= nl2br(htmlspecialchars(trim($para))) ?></p>
   <?php endforeach; ?>
-<?php else: ?>
-<p>Sem conclusão técnico-comercial registrada.</p>
+</div>
 <?php endif; ?>
 
-<div style="margin-top:20pt; border-top:1px solid #edf2f7; padding-top:10pt; text-align:center;">
-  <p style="font-size:9.5pt; color:<?= $AZUL ?>; font-weight:bold; margin-bottom:2pt;">
+
+<!-- ═══════════════════════ PRÓXIMOS PASSOS ═══════════════════════ -->
+<div style="<?= $r['conclusao'] ? '' : 'page-break-before:always;' ?> margin-top:6pt;">
+
+<div class="section-header">
+  <div class="section-num">Seção Final</div>
+  <h1>Próximos Passos</h1>
+</div>
+
+<p>Para transformar as oportunidades identificadas em resultados reais, recomendamos seguir o roteiro abaixo:</p>
+
+<div style="border:1px solid #e2e8f0; border-radius:10px; padding:14pt 18pt; background:#f8fafc; margin-bottom:16pt;">
+
+  <div style="padding:10pt 0; border-bottom:1px solid #e2e8f0;">
+    <table style="border:none; margin:0; width:100%;">
+      <tr>
+        <td style="border:none; padding:0; width:28pt; vertical-align:middle;">
+          <div style="width:22pt; height:22pt; background:<?= $AZUL ?>; border-radius:50%; text-align:center; font-size:10pt; font-weight:bold; color:#fff; line-height:22pt;">1</div>
+        </td>
+        <td style="border:none; padding:0 0 0 8pt; vertical-align:middle;">
+          <div style="font-size:9.5pt; font-weight:bold; color:#1e293b;">Aprovação da Proposta</div>
+          <div style="font-size:8.5pt; color:#64748b; margin-top:2pt;">Análise e validação do escopo de trabalho e investimento necessário.</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <div style="padding:10pt 0; border-bottom:1px solid #e2e8f0;">
+    <table style="border:none; margin:0; width:100%;">
+      <tr>
+        <td style="border:none; padding:0; width:28pt; vertical-align:middle;">
+          <div style="width:22pt; height:22pt; background:<?= $AZUL ?>; border-radius:50%; text-align:center; font-size:10pt; font-weight:bold; color:#fff; line-height:22pt;">2</div>
+        </td>
+        <td style="border:none; padding:0 0 0 8pt; vertical-align:middle;">
+          <div style="font-size:9.5pt; font-weight:bold; color:#1e293b;">Implementação das Correções</div>
+          <div style="font-size:8.5pt; color:#64748b; margin-top:2pt;">Execução técnica das melhorias priorizadas pela equipe especializada da Rajo Desenvolvimento.</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <div style="padding:10pt 0; border-bottom:1px solid #e2e8f0;">
+    <table style="border:none; margin:0; width:100%;">
+      <tr>
+        <td style="border:none; padding:0; width:28pt; vertical-align:middle;">
+          <div style="width:22pt; height:22pt; background:<?= $AZUL ?>; border-radius:50%; text-align:center; font-size:10pt; font-weight:bold; color:#fff; line-height:22pt;">3</div>
+        </td>
+        <td style="border:none; padding:0 0 0 8pt; vertical-align:middle;">
+          <div style="font-size:9.5pt; font-weight:bold; color:#1e293b;">Monitoramento dos Resultados</div>
+          <div style="font-size:8.5pt; color:#64748b; margin-top:2pt;">Acompanhamento das métricas para validar o impacto real das melhorias implementadas.</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <div style="padding:10pt 0;">
+    <table style="border:none; margin:0; width:100%;">
+      <tr>
+        <td style="border:none; padding:0; width:28pt; vertical-align:middle;">
+          <div style="width:22pt; height:22pt; background:<?= $AZUL ?>; border-radius:50%; text-align:center; font-size:10pt; font-weight:bold; color:#fff; line-height:22pt;">4</div>
+        </td>
+        <td style="border:none; padding:0 0 0 8pt; vertical-align:middle;">
+          <div style="font-size:9.5pt; font-weight:bold; color:#1e293b;">Reavaliação do Desempenho</div>
+          <div style="font-size:8.5pt; color:#64748b; margin-top:2pt;">Nova rodada de diagnóstico para medir a evolução e identificar as próximas oportunidades de crescimento.</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+</div>
+
+<!-- CTA final -->
+<div style="background:<?= $AZUL ?>; border-radius:10px; padding:16pt 20pt; text-align:center; margin-bottom:16pt;">
+  <div style="font-size:11pt; font-weight:bold; color:#fff; margin-bottom:6pt;">Pronto para transformar seu site em uma máquina de resultados?</div>
+  <div style="font-size:9pt; color:rgba(255,255,255,0.8); margin-bottom:10pt;">Entre em contato com a equipe da Rajo Desenvolvimento e dê o próximo passo.</div>
+  <div style="font-size:9pt; font-weight:bold; color:#fff;">rajo.com.br &nbsp;&bull;&nbsp; contato@rajo.com.br</div>
+</div>
+
+</div>
+
+<!-- Rodapé final -->
+<div style="border-top:1.5px solid #e2e8f0; padding-top:8pt; text-align:center; margin-top:4pt;">
+  <p style="font-size:9pt; color:<?= $AZUL ?>; font-weight:bold; margin-bottom:2pt;">
     <?= htmlspecialchars($r['analista']) ?> &bull; Rajo Desenvolvimento
   </p>
-  <p style="font-size:7.5pt; color:#a0aec0; letter-spacing:0.5px; text-transform:uppercase;">
+  <p style="font-size:7.5pt; color:#a0aec0; letter-spacing:0.3px; text-transform:uppercase;">
     rajo.com.br &bull; contato@rajo.com.br &bull; Engenharia de Conversão e Otimização Avançada
   </p>
 </div>
@@ -1179,16 +1438,16 @@ $html = ob_get_clean();
 
 // ─── Gerar PDF com mPDF ───────────────────────────────────────
 $mpdf = new \Mpdf\Mpdf([
-    'mode'        => 'utf-8',
-    'format'      => 'A4',
-    'margin_top'  => 15,
-    'margin_right'=> 15,
+    'mode'         => 'utf-8',
+    'format'       => 'A4',
+    'margin_top'   => 14,
+    'margin_right' => 14,
     'margin_bottom'=> 20,
-    'margin_left' => 15,
-    'margin_header'=> 8,
-    'margin_footer'=> 8,
+    'margin_left'  => 14,
+    'margin_header'=> 7,
+    'margin_footer'=> 7,
     'default_font' => 'arial',
-    'tempDir'     => sys_get_temp_dir() . '/mpdf',
+    'tempDir'      => sys_get_temp_dir() . '/mpdf',
 ]);
 
 $screenshot_local = $r['screenshot_path'] ?? null;
@@ -1198,20 +1457,20 @@ if ($screenshot_local && file_exists(__DIR__ . '/' . $screenshot_local)) {
 }
 
 $mpdf->SetHTMLHeader('
-  <table width="100%" style="border-bottom:1px solid ' . $AZUL . ';padding-bottom:4px;border:none;">
+  <table width="100%" style="border-bottom:1px solid ' . $AZUL . '; padding-bottom:4px; border:none; margin:0;">
     <tr>
-      <td style="font-size:8.5pt;color:' . $AZUL . ';font-weight:bold;border:none;padding:0;">RAJO</td>
-      <td style="font-size:8pt;color:#718096;text-align:right;border:none;padding:0;">
-        Diagnóstico Técnico — ' . htmlspecialchars($r['cliente']) . '
+      <td style="font-size:8pt; color:' . $AZUL . '; font-weight:bold; border:none; padding:0;">RAJO</td>
+      <td style="font-size:7.5pt; color:#718096; text-align:right; border:none; padding:0;">
+        Diagnóstico Estratégico de SEO &mdash; ' . htmlspecialchars($r['cliente']) . '
       </td>
     </tr>
   </table>
 ');
 $mpdf->SetHTMLFooter('
-  <table width="100%" style="border-top:1px solid #edf2f7;padding-top:4px;border:none;">
+  <table width="100%" style="border-top:1px solid #e2e8f0; padding-top:4px; border:none; margin:0;">
     <tr>
-      <td style="font-size:7.5pt;color:#a0aec0;border:none;padding:0;">rajo.com.br &bull; Confidencial</td>
-      <td style="font-size:7.5pt;color:#a0aec0;text-align:right;border:none;padding:0;">Página {PAGENO} de {nbpg}</td>
+      <td style="font-size:7pt; color:#a0aec0; border:none; padding:0;">rajo.com.br &bull; Documento Confidencial</td>
+      <td style="font-size:7pt; color:#a0aec0; text-align:right; border:none; padding:0;">Página {PAGENO} de {nbpg}</td>
     </tr>
   </table>
 ');

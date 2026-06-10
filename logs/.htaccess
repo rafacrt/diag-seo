@@ -1,0 +1,2 @@
+# Bloqueia acesso HTTP direto aos arquivos de log (Apache 2.4+)
+Require all denied

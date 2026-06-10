@@ -1,6 +1,8 @@
 /vendor/
 form.php.bak
+config-old.php
 .gemini/
 .git/
 *.log
 config-local.php
+/scratch/

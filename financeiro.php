@@ -53,6 +53,7 @@ $cupom_utilizado = '';
 
 // ─── PROCESSAMENTO DE SOLICITAÇÃO DE RECARGA ──────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['acao']) && $_POST['acao'] === 'solicitar_recarga') {
+    csrf_validar();
     try {
         $valor_solicitado = (float)($_POST['valor_recarga'] ?? 0.00);
         $codigo_cupom = strtoupper(trim($_POST['cupom_codigo'] ?? ''));
@@ -306,6 +307,7 @@ $extrato = $stmt_t->fetchAll();
                     <h5 class="fw-bold mb-3 text-dark" style="font-family: var(--font-title);"><i class="bi bi-wallet2 text-primary me-2"></i>Adicionar Saldo de Créditos</h5>
                     
                     <form action="financeiro.php" method="POST" id="formRecarga">
+                        <?= csrf_campo() ?>
                         <input type="hidden" name="acao" value="solicitar_recarga">
                         
                         <div class="mb-3">

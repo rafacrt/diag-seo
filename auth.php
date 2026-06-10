@@ -4,7 +4,51 @@
 // ============================================================
 
 if (session_status() === PHP_SESSION_NONE) {
+    // Endurecimento dos cookies de sessão: inacessíveis via JS, restritos
+    // a navegação same-site e marcados como secure quando servidos por HTTPS
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+          || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
+    session_set_cookie_params([
+        'lifetime' => 0,
+        'path'     => '/',
+        'secure'   => $https,
+        'httponly' => true,
+        'samesite' => 'Lax',
+    ]);
     session_start();
+}
+
+// ─── Proteção CSRF ───────────────────────────────────────────
+
+/**
+ * Retorna o token CSRF da sessão atual, gerando-o na primeira chamada.
+ */
+function csrf_token(): string
+{
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf_token'];
+}
+
+/**
+ * Campo hidden pronto para uso dentro de <form>.
+ */
+function csrf_campo(): string
+{
+    return '<input type="hidden" name="csrf_token" value="' . csrf_token() . '">';
+}
+
+/**
+ * Valida o token CSRF recebido via POST. Encerra com HTTP 403 se inválido.
+ */
+function csrf_validar(): void
+{
+    $recebido = $_POST['csrf_token'] ?? '';
+    if (!is_string($recebido) || $recebido === '' || !hash_equals($_SESSION['csrf_token'] ?? '', $recebido)) {
+        http_response_code(403);
+        die('Falha na validação de segurança (CSRF). Recarregue a página e tente novamente.');
+    }
 }
 
 /**

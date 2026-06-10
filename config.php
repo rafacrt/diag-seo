@@ -11,12 +11,19 @@ if (file_exists(__DIR__ . '/vendor/autoload.php')) {
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-define('SMTP_HOST', 'smtp.resend.com');
-define('SMTP_PORT', 587);
-define('SMTP_USER', 'resend');
-define('SMTP_PASS', 're_jHKVor49_DPowZNW8LBm3uLeubq4J5VDT');
-define('SMTP_FROM', 'central@rajohost.com.br'); // Domínio verificado no Resend
-define('SMTP_FROM_NAME', 'Rajo Diagnóstico');
+// Carrega configurações locais/segredos ANTES de qualquer fallback.
+// Credenciais reais (SMTP, banco, APIs) devem morar em config-local.php,
+// que está no .gitignore — nunca commitar segredos neste arquivo.
+if (file_exists(__DIR__ . '/config-local.php')) {
+    require_once __DIR__ . '/config-local.php';
+}
+
+if (!defined('SMTP_HOST'))      define('SMTP_HOST', 'smtp.resend.com');
+if (!defined('SMTP_PORT'))      define('SMTP_PORT', 587);
+if (!defined('SMTP_USER'))      define('SMTP_USER', 'resend');
+if (!defined('SMTP_PASS'))      define('SMTP_PASS', ''); // Definir em config-local.php
+if (!defined('SMTP_FROM'))      define('SMTP_FROM', 'central@rajohost.com.br'); // Domínio verificado no Resend
+if (!defined('SMTP_FROM_NAME')) define('SMTP_FROM_NAME', 'Rajo Diagnóstico');
 
 /**
  * Registra logs detalhados do sistema em um arquivo local na pasta /logs
@@ -90,22 +97,17 @@ function enviar_email(string $para, string $assunto, string $corpo_html): bool
     }
 }
 
-// Carrega configurações locais se o arquivo existir
-if (file_exists(__DIR__ . '/config-local.php')) {
-    require_once __DIR__ . '/config-local.php';
-}
-
-// Configurações de Banco de Dados (Produção - Fallback)
+// Configurações de Banco de Dados — credenciais reais em config-local.php
 if (!defined('DB_HOST'))
     define('DB_HOST', 'localhost');
 if (!defined('DB_CHARSET'))
     define('DB_CHARSET', 'utf8mb4');
 if (!defined('DB_NAME'))
-    define('DB_NAME', 'rafacrt_diagseo');
+    define('DB_NAME', '');
 if (!defined('DB_USER'))
-    define('DB_USER', 'rafacrt_diagseo');
+    define('DB_USER', '');
 if (!defined('DB_PASS'))
-    define('DB_PASS', '7Mb8M1N14dvP');
+    define('DB_PASS', '');
 
 // Configurações Globais do Aplicativo (Produção - Fallback)
 if (!defined('APP_NAME'))
@@ -115,7 +117,7 @@ if (!defined('APP_URL'))
 if (!defined('ANALISTA_PADRAO'))
     define('ANALISTA_PADRAO', 'Rafael Medeiros – Rajo Desenvolvimento');
 if (!defined('PAGESPEED_API_KEY'))
-    define('PAGESPEED_API_KEY', 'AIzaSyD2kDYU4tzQMVH3xRRioX-9C89GmYgLvJQ');
+    define('PAGESPEED_API_KEY', ''); // Definir em config-local.php
 
 // Controle do fluxo de Ativação por E-mail (SaaS)
 // Defina como FALSE em produção se quiser desativar a exigência de confirmação por link de e-mail temporariamente
@@ -123,6 +125,12 @@ if (!defined('EXIGIR_ATIVACAO_EMAIL'))
     define('EXIGIR_ATIVACAO_EMAIL', true);
 
 // ─── Conexão PDO ─────────────────────────────────────────────
+
+// Versão atual do schema. Incremente este número sempre que adicionar
+// uma nova migração em executar_migracoes() — elas só rodam quando a
+// versão gravada no banco for menor, eliminando dezenas de DDLs por request.
+const SCHEMA_VERSION = 2;
+
 function db(): PDO
 {
     static $pdo = null;
@@ -133,6 +141,42 @@ function db(): PDO
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
         ]);
+
+        // Checagem barata: 1 SELECT por request. Migrações só rodam quando necessário.
+        $versao_atual = 0;
+        try {
+            $stmt = $pdo->query("SELECT valor FROM configuracoes WHERE chave = 'schema_version'");
+            $versao_atual = (int) $stmt->fetchColumn();
+        } catch (Throwable $e) {
+            // Tabela configuracoes ainda não existe — instalação nova
+        }
+
+        if ($versao_atual < SCHEMA_VERSION) {
+            executar_migracoes($pdo);
+            try {
+                $pdo->exec("INSERT INTO configuracoes (chave, valor) VALUES ('schema_version', '" . SCHEMA_VERSION . "')
+                            ON DUPLICATE KEY UPDATE valor = '" . SCHEMA_VERSION . "'");
+            } catch (Throwable $e) {
+            }
+        }
+    }
+    return $pdo;
+}
+
+/**
+ * Migrações idempotentes do schema. Executadas uma única vez por versão
+ * (controlado por SCHEMA_VERSION + configuracoes.schema_version).
+ */
+function executar_migracoes(PDO $pdo): void
+{
+        // Tabela de configurações primeiro (guarda a própria versão do schema)
+        try {
+            $pdo->exec("CREATE TABLE IF NOT EXISTS configuracoes (
+                chave VARCHAR(50) PRIMARY KEY,
+                valor TEXT
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+        } catch (Throwable $e) {
+        }
 
         // Criar ou atualizar tabela de usuários para a versão SaaS
         try {
@@ -265,11 +309,62 @@ function db(): PDO
             } catch (Throwable $e) {
             }
 
+            // ── Colunas da tabela relatorios (antes espalhadas pelo index.php) ──
+            foreach ([
+                "ALTER TABLE relatorios MODIFY COLUMN gtm_nota VARCHAR(50) NULL",
+                "ALTER TABLE relatorios ADD COLUMN pdf_cor_tema VARCHAR(7) DEFAULT '#1A4FBB'",
+                "ALTER TABLE relatorios ADD COLUMN logo_cliente VARCHAR(255) DEFAULT NULL",
+                "ALTER TABLE relatorios ADD COLUMN bloquear_plano TINYINT(1) DEFAULT 0",
+                "ALTER TABLE relatorios ADD COLUMN auditoria_cms VARCHAR(100) DEFAULT NULL",
+                "ALTER TABLE relatorios ADD COLUMN auditoria_hospedagem TEXT DEFAULT NULL",
+                "ALTER TABLE relatorios ADD COLUMN auditoria_seguranca TEXT DEFAULT NULL",
+                "ALTER TABLE relatorios ADD COLUMN auditoria_dns TEXT DEFAULT NULL",
+                "ALTER TABLE relatorios ADD COLUMN tipo_relatorio VARCHAR(20) DEFAULT 'completo'",
+                "ALTER TABLE relatorios ADD COLUMN ads_nicho VARCHAR(100) DEFAULT NULL",
+                "ALTER TABLE relatorios ADD COLUMN ads_investimento DECIMAL(10,2) DEFAULT NULL",
+                "ALTER TABLE relatorios ADD COLUMN ads_cpc DECIMAL(10,2) DEFAULT NULL",
+                "ALTER TABLE relatorios ADD COLUMN screenshot_path VARCHAR(255) DEFAULT NULL",
+            ] as $ddl) {
+                try { $pdo->exec($ddl); } catch (Throwable $e) {}
+            }
+
+            // ── Token público de compartilhamento por relatório ──
+            // Permite enviar o relatório ao cliente final sem login e sem expor IDs sequenciais
+            try {
+                $pdo->exec("ALTER TABLE relatorios ADD COLUMN token_publico VARCHAR(64) DEFAULT NULL");
+            } catch (Throwable $e) {
+            }
+            try {
+                $pdo->exec("CREATE UNIQUE INDEX idx_relatorios_token ON relatorios (token_publico)");
+            } catch (Throwable $e) {
+            }
+            // Backfill: gera token para relatórios antigos sem um
+            try {
+                $sem_token = $pdo->query("SELECT id FROM relatorios WHERE token_publico IS NULL OR token_publico = ''")->fetchAll();
+                if ($sem_token) {
+                    $upd = $pdo->prepare("UPDATE relatorios SET token_publico = ? WHERE id = ?");
+                    foreach ($sem_token as $row) {
+                        $upd->execute([bin2hex(random_bytes(24)), $row['id']]);
+                    }
+                }
+            } catch (Throwable $e) {
+            }
+
+            // ── Controle de tentativas de login (proteção contra força bruta) ──
+            try {
+                $pdo->exec("CREATE TABLE IF NOT EXISTS login_tentativas (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    email VARCHAR(100) NOT NULL,
+                    ip VARCHAR(45) NOT NULL,
+                    tentado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_login_email_ip (email, ip, tentado_em)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+            } catch (Throwable $e) {
+            }
+
         } catch (Throwable $e) {
             // Ignora silenciosamente em caso de erro na migração automática
         }
-    }
-    return $pdo;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────
@@ -372,10 +467,14 @@ function debitarEmissaoRelatorio(int $usuario_id, string $dominio): bool
         if ($user['tipo'] === 'master')
             return true; // Master não consome saldo nem bônus
 
-        // 1. Consome bônus se houver
+        // 1. Consome bônus se houver — UPDATE condicional atômico evita
+        // que dois requests simultâneos consumam o mesmo bônus
         if ((int) $user['bonus_relatorios'] > 0) {
-            $upd = db()->prepare("UPDATE usuarios SET bonus_relatorios = bonus_relatorios - 1 WHERE id = ?");
+            $upd = db()->prepare("UPDATE usuarios SET bonus_relatorios = bonus_relatorios - 1 WHERE id = ? AND bonus_relatorios > 0");
             $upd->execute([$usuario_id]);
+            if ($upd->rowCount() === 0) {
+                return false; // Outro request consumiu o bônus primeiro
+            }
 
             // Logar transação
             $log = db()->prepare("INSERT INTO transacoes (usuario_id, tipo, valor, descricao, status) VALUES (?, 'bonus', 0.00, ?, 'concluido')");
@@ -383,14 +482,14 @@ function debitarEmissaoRelatorio(int $usuario_id, string $dominio): bool
             return true;
         }
 
-        // 2. Senão, consome do saldo
+        // 2. Senão, consome do saldo — a condição saldo >= custo no próprio
+        // UPDATE garante que o débito nunca deixe o saldo negativo
         $custo = obterCustoUsuario($usuario_id);
-        if ((float) $user['saldo'] < $custo) {
+        $upd = db()->prepare("UPDATE usuarios SET saldo = saldo - ? WHERE id = ? AND saldo >= ?");
+        $upd->execute([$custo, $usuario_id, $custo]);
+        if ($upd->rowCount() === 0) {
             return false; // Saldo insuficiente
         }
-
-        $upd = db()->prepare("UPDATE usuarios SET saldo = saldo - ? WHERE id = ?");
-        $upd->execute([$custo, $usuario_id]);
 
         // Logar transação
         $log = db()->prepare("INSERT INTO transacoes (usuario_id, tipo, valor, descricao, status) VALUES (?, 'emissao', ?, ?, 'concluido')");
@@ -443,4 +542,91 @@ function gerarCopiaColaPix(float $valor, string $txid = 'RECARGASALDO'): string
 
     $crcHex = strtoupper(str_pad(dechex($crc), 4, '0', STR_PAD_LEFT));
     return $payload . $crcHex;
+}
+
+// ─── Proteção contra força bruta no login ────────────────────
+
+const LOGIN_MAX_TENTATIVAS = 5;   // Tentativas falhas permitidas
+const LOGIN_JANELA_MINUTOS = 15;  // Janela de contagem/bloqueio
+
+function login_bloqueado(string $email, string $ip): bool
+{
+    try {
+        $stmt = db()->prepare("SELECT COUNT(*) FROM login_tentativas
+                               WHERE email = ? AND ip = ?
+                                 AND tentado_em > DATE_SUB(NOW(), INTERVAL " . LOGIN_JANELA_MINUTOS . " MINUTE)");
+        $stmt->execute([$email, $ip]);
+        return (int) $stmt->fetchColumn() >= LOGIN_MAX_TENTATIVAS;
+    } catch (Throwable $e) {
+        return false; // Falha na checagem não deve travar o login legítimo
+    }
+}
+
+function login_registrar_falha(string $email, string $ip): void
+{
+    try {
+        $stmt = db()->prepare("INSERT INTO login_tentativas (email, ip) VALUES (?, ?)");
+        $stmt->execute([$email, $ip]);
+        // Limpeza oportunista de registros antigos (mantém a tabela enxuta)
+        db()->exec("DELETE FROM login_tentativas WHERE tentado_em < DATE_SUB(NOW(), INTERVAL 1 DAY)");
+    } catch (Throwable $e) {
+    }
+}
+
+function login_limpar_tentativas(string $email, string $ip): void
+{
+    try {
+        $stmt = db()->prepare("DELETE FROM login_tentativas WHERE email = ? AND ip = ?");
+        $stmt->execute([$email, $ip]);
+    } catch (Throwable $e) {
+    }
+}
+
+// ─── Controle de acesso a relatórios ─────────────────────────
+
+/**
+ * Carrega um relatório validando o acesso. Aceita duas formas:
+ *  - ?t=TOKEN  → acesso público (link de compartilhamento enviado ao cliente)
+ *  - ?id=N     → exige login; analista comum só acessa os próprios relatórios
+ *
+ * Retorna [relatorio, acesso_publico]. Encerra a requisição em caso de
+ * acesso negado ou relatório inexistente.
+ */
+function carregar_relatorio_autorizado(): array
+{
+    $token = trim($_GET['t'] ?? '');
+    if ($token !== '') {
+        $stmt = db()->prepare('SELECT * FROM relatorios WHERE token_publico = ?');
+        $stmt->execute([$token]);
+        $r = $stmt->fetch();
+        if (!$r) {
+            http_response_code(404);
+            die('Relatório não encontrado ou link inválido.');
+        }
+        return [$r, true];
+    }
+
+    // Sem token: exige sessão autenticada
+    exigir_login();
+
+    $id = (int) ($_GET['id'] ?? 0);
+    if (!$id) {
+        http_response_code(400);
+        die('ID do relatório inválido.');
+    }
+
+    $stmt = db()->prepare('SELECT * FROM relatorios WHERE id = ?');
+    $stmt->execute([$id]);
+    $r = $stmt->fetch();
+    if (!$r) {
+        http_response_code(404);
+        die('Relatório não encontrado.');
+    }
+
+    if (!e_master() && (int) ($r['usuario_id'] ?? 0) !== (int) $_SESSION['usuario_id']) {
+        http_response_code(403);
+        die('Acesso negado. Este relatório pertence a outro analista.');
+    }
+
+    return [$r, false];
 }

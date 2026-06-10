@@ -2,7 +2,15 @@
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/auth.php';
 exigir_login();
-$id = (int)($_GET['id'] ?? 0);
+
+// Exclusão é ação destrutiva: só via POST com token CSRF válido
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    http_response_code(405);
+    die('Método não permitido. A exclusão deve ser feita pelo painel.');
+}
+csrf_validar();
+
+$id = (int)($_POST['id'] ?? 0);
 if ($id > 0) {
     if (e_master()) {
         // Master tem permissão livre para excluir qualquer diagnóstico

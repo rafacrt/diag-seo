@@ -19,8 +19,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email_digitado = trim($_POST['email'] ?? '');
     $senha = $_POST['senha'] ?? '';
 
+    $ip_cliente = $_SERVER['REMOTE_ADDR'] ?? 'desconhecido';
+
     if ($email_digitado === '' || $senha === '') {
         $erro = 'Por favor, insira o seu e-mail e a senha.';
+    } elseif (login_bloqueado($email_digitado, $ip_cliente)) {
+        $erro = 'Muitas tentativas de login. Por segurança, aguarde alguns minutos antes de tentar novamente.';
+        registrar_log("Login bloqueado por excesso de tentativas: {$email_digitado} ({$ip_cliente})", 'WARN');
     } else {
         try {
             $stmt = db()->prepare("SELECT * FROM usuarios WHERE email = :email LIMIT 1");
@@ -62,7 +67,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $erro = 'Sua conta ainda não está ativada. Um novo link de confirmação foi enviado para o seu e-mail.';
                 } else {
-                    // Autenticação concluída com sucesso
+                    // Autenticação concluída com sucesso.
+                    // Regenera o ID da sessão para impedir session fixation
+                    session_regenerate_id(true);
+                    login_limpar_tentativas($email_digitado, $ip_cliente);
+
                     $_SESSION['usuario_id'] = $user['id'];
                     $_SESSION['usuario_nome'] = $user['nome'] ?? $user['email'];
                     $_SESSION['usuario_login'] = $user['email'];
@@ -72,10 +81,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     exit;
                 }
             } else {
+                login_registrar_falha($email_digitado, $ip_cliente);
                 $erro = 'E-mail ou senha incorretos.';
             }
         } catch (Throwable $e) {
-            $erro = 'Erro ao processar login: ' . $e->getMessage();
+            // Nunca expor detalhes internos (paths, DSN, SQL) ao visitante
+            registrar_log('Erro no login: ' . $e->getMessage(), 'ERROR');
+            $erro = 'Erro interno ao processar o login. Tente novamente em instantes.';
         }
     }
 }

@@ -5,10 +5,9 @@
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/auth.php';
 
-// Apenas analistas Master ou ambiente de desenvolvimento podem acessar
-if (esta_logado() && !e_master()) {
-    die("Acesso negado. Apenas administradores Master.");
-}
+// Apenas analistas Master podem acessar — a checagem anterior
+// (esta_logado() && !e_master()) deixava visitantes anônimos passarem
+exigir_master();
 
 $mensagem_banco = '';
 $mensagem_post = '';

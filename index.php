@@ -9,50 +9,8 @@ $limit = 12;
 $offset = ($page - 1) * $limit;
 
 try {
-    // Migração automática e silenciosa para suportar erros descritivos do GTmetrix
-    try {
-        db()->exec("ALTER TABLE relatorios MODIFY COLUMN gtm_nota VARCHAR(50) NULL");
-    } catch (Throwable $e_migracao) {
-        // Ignora silenciosamente se a tabela ainda não existir ou se a coluna já estiver alterada
-    }
-
-    // Migração para suportar cores, logos e bloqueio comercial do plano de ação (executado individualmente para compatibilidade com MySQL/MariaDB)
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN pdf_cor_tema VARCHAR(7) DEFAULT '#1A4FBB'");
-    } catch (Throwable $e) {}
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN logo_cliente VARCHAR(255) DEFAULT NULL");
-    } catch (Throwable $e) {}
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN bloquear_plano TINYINT(1) DEFAULT 0");
-    } catch (Throwable $e) {}
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN auditoria_cms VARCHAR(100) DEFAULT NULL");
-    } catch (Throwable $e) {}
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN auditoria_hospedagem TEXT DEFAULT NULL");
-    } catch (Throwable $e) {}
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN auditoria_seguranca TEXT DEFAULT NULL");
-    } catch (Throwable $e) {}
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN auditoria_dns TEXT DEFAULT NULL");
-    } catch (Throwable $e) {}
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN tipo_relatorio VARCHAR(20) DEFAULT 'completo'");
-    } catch (Throwable $e) {}
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN ads_nicho VARCHAR(100) DEFAULT NULL");
-    } catch (Throwable $e) {}
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN ads_investimento DECIMAL(10,2) DEFAULT NULL");
-    } catch (Throwable $e) {}
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN ads_cpc DECIMAL(10,2) DEFAULT NULL");
-    } catch (Throwable $e) {}
-    try {
-        db()->exec("ALTER TABLE relatorios ADD COLUMN screenshot_path VARCHAR(255) DEFAULT NULL");
-    } catch (Throwable $e) {}
+    // Migrações de schema agora rodam de forma versionada em config.php
+    // (executar_migracoes), uma única vez por versão — não a cada page load.
 
     $usuario_id = (int)$_SESSION['usuario_id'];
     $is_master = e_master();
@@ -286,6 +244,10 @@ try {
               <li class="dropdown-header text-white-50 fw-bold small text-uppercase" style="font-size: 0.68rem; letter-spacing: 0.05em;">Relatório Compacto</li>
               <li><a class="dropdown-item d-flex align-items-center gap-2 py-2" href="visualizar.php?id=<?= $r['id'] ?>&formato=compacto&plano=liberado" target="_blank"><i class="bi bi-check-circle-fill text-success"></i> Compacto + Plano Ativo</a></li>
               <li><a class="dropdown-item d-flex align-items-center gap-2 py-2" href="visualizar.php?id=<?= $r['id'] ?>&formato=compacto&plano=oculto" target="_blank"><i class="bi bi-eye-slash-fill text-warning"></i> Compacto + Plano Oculto</a></li>
+              <?php if (!empty($r['token_publico'])): ?>
+              <li><hr class="dropdown-divider border-secondary"></li>
+              <li><button type="button" class="dropdown-item d-flex align-items-center gap-2 py-2" onclick="copiarLinkPublico('<?= e($r['token_publico']) ?>')"><i class="bi bi-link-45deg text-info"></i> Copiar Link Público</button></li>
+              <?php endif; ?>
             </ul>
           </div>
 
@@ -343,7 +305,11 @@ try {
       </div>
       <div class="modal-footer border-0 pt-0 justify-content-end gap-2">
         <button type="button" class="btn btn-sm btn-light px-3 py-2 fw-semibold" style="border-radius: 8px;" data-bs-dismiss="modal">Voltar</button>
-        <a id="btnExcluirConfirmar" href="#" class="btn btn-sm btn-danger px-3 py-2 fw-semibold" style="border-radius: 8px;">Confirmar Exclusão</a>
+        <form id="formExcluir" method="POST" action="excluir.php" class="m-0">
+          <?= csrf_campo() ?>
+          <input type="hidden" name="id" id="idExcluir" value="">
+          <button type="submit" class="btn btn-sm btn-danger px-3 py-2 fw-semibold" style="border-radius: 8px;">Confirmar Exclusão</button>
+        </form>
       </div>
     </div>
   </div>
@@ -353,8 +319,15 @@ try {
 <script>
 function confirmarExclusao(id, cliente) {
   document.getElementById('clienteExcluir').textContent = cliente;
-  document.getElementById('btnExcluirConfirmar').href = 'excluir.php?id=' + id;
+  document.getElementById('idExcluir').value = id;
   new bootstrap.Modal(document.getElementById('modalExcluir')).show();
+}
+
+function copiarLinkPublico(token) {
+  const url = window.location.origin + window.location.pathname.replace('index.php', '') + 'visualizar.php?t=' + token;
+  navigator.clipboard.writeText(url).then(() => {
+    alert('Link público copiado!\n\nEnvie ao cliente — ele abre o relatório sem precisar de login:\n' + url);
+  }).catch(() => prompt('Copie o link público do relatório:', url));
 }
 </script>
 </body>
