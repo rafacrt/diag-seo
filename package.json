@@ -1,0 +1,16 @@
+{
+  "name": "diag-seo",
+  "version": "1.0.0",
+  "description": "Sistema para gerar relatórios profissionais de diagnóstico técnico de sites com exportação em PDF.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "dotenv": "^17.4.2"
+  }
+}

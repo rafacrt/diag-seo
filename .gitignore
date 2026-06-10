@@ -6,3 +6,7 @@ config-old.php
 *.log
 config-local.php
 /scratch/
+node_modules/
+.env
+test-results/
+playwright-report/

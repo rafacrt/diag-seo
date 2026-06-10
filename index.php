@@ -15,18 +15,20 @@ try {
     $usuario_id = (int)$_SESSION['usuario_id'];
     $is_master = e_master();
 
+    // Placeholders distintos (:q1/:q2): com EMULATE_PREPARES=false o MySQL
+    // não permite reusar o mesmo placeholder nomeado duas vezes (HY093).
     if ($is_master) {
         if ($busca) {
-            $where = 'WHERE r.cliente LIKE :q OR r.dominio LIKE :q';
-            $params_total = [':q' => "%$busca%"];
+            $where = 'WHERE r.cliente LIKE :q1 OR r.dominio LIKE :q2';
+            $params_total = [':q1' => "%$busca%", ':q2' => "%$busca%"];
         } else {
             $where = '';
             $params_total = [];
         }
     } else {
         if ($busca) {
-            $where = 'WHERE r.usuario_id = :usuario_id AND (r.cliente LIKE :q OR r.dominio LIKE :q)';
-            $params_total = [':usuario_id' => $usuario_id, ':q' => "%$busca%"];
+            $where = 'WHERE r.usuario_id = :usuario_id AND (r.cliente LIKE :q1 OR r.dominio LIKE :q2)';
+            $params_total = [':usuario_id' => $usuario_id, ':q1' => "%$busca%", ':q2' => "%$busca%"];
         } else {
             $where = 'WHERE r.usuario_id = :usuario_id';
             $params_total = [':usuario_id' => $usuario_id];
@@ -46,7 +48,10 @@ try {
     if (!$is_master) {
         $stmt->bindValue(':usuario_id', $usuario_id, PDO::PARAM_INT);
     }
-    if ($busca) $stmt->bindValue(':q', "%$busca%");
+    if ($busca) {
+        $stmt->bindValue(':q1', "%$busca%");
+        $stmt->bindValue(':q2', "%$busca%");
+    }
     $stmt->bindValue(':limit',  $limit,  PDO::PARAM_INT);
     $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
     $stmt->execute();
