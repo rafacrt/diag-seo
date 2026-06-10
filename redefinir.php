@@ -37,7 +37,8 @@ if ($token !== '') {
             $erro = 'Link de recuperação de senha inválido ou já utilizado.';
         }
     } catch (Throwable $e) {
-        $erro = 'Erro ao processar validação do link: ' . $e->getMessage();
+        registrar_log('Erro ao validar link de redefinição: ' . $e->getMessage(), 'ERROR');
+        $erro = 'Não foi possível validar o link. Tente novamente em instantes.';
     }
 } else {
     $erro = 'Código de segurança de redefinição ausente.';
@@ -83,7 +84,8 @@ if ($token_valido && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['nova
                 exit;
 
             } catch (Throwable $ex) {
-                $erro = 'Erro técnico ao salvar nova senha: ' . $ex->getMessage();
+                registrar_log('Erro ao salvar nova senha: ' . $ex->getMessage(), 'ERROR');
+                $erro = 'Erro técnico ao salvar a nova senha. Tente novamente em instantes.';
             }
         }
     }

@@ -56,7 +56,8 @@ try {
     // Buscar avisos globais ativos no sistema
     $avisos_sistema = db()->query("SELECT titulo, mensagem, tipo FROM avisos WHERE ativo = 1 ORDER BY criado_em DESC")->fetchAll();
 } catch (PDOException $e) {
-    $erro = $e->getMessage();
+    registrar_log('Erro ao carregar painel: ' . $e->getMessage(), 'ERROR');
+    $erro = 'Não foi possível carregar os relatórios no momento. Tente novamente em instantes.';
     $relatorios = [];
     $total = 0;
     $pages = 0;

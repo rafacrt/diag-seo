@@ -284,7 +284,8 @@ try {
     @file_put_contents(__DIR__ . '/logs/sistema.log', $log_message, FILE_APPEND);
     
     http_response_code(500);
-    echo json_encode(['ok' => false, 'msg' => $e->getMessage()]);
+    registrar_log('Erro ao salvar relatório: ' . $e->getMessage(), 'ERROR');
+    echo json_encode(['ok' => false, 'msg' => 'Erro interno ao salvar o relatório. Tente novamente em instantes.']);
 }
 
 function intOrNull(string $v): ?int {

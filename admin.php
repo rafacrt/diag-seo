@@ -269,7 +269,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
 
     } catch (Throwable $e) {
-        $_SESSION['admin_erro'] = 'Erro ao processar solicitação: ' . $e->getMessage();
+        registrar_log('Erro no painel admin: ' . $e->getMessage(), 'ERROR');
+        $_SESSION['admin_erro'] = 'Não foi possível concluir a operação. Tente novamente em instantes.';
         header("Location: admin.php?aba=" . urlencode($aba_ativa));
         exit;
     }

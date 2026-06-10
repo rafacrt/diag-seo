@@ -45,7 +45,8 @@ if ($token === '') {
             }
         }
     } catch (Throwable $e) {
-        $erro = 'Erro interno ao validar ativação: ' . $e->getMessage();
+        registrar_log('Erro ao validar ativação: ' . $e->getMessage(), 'ERROR');
+        $erro = 'Erro interno ao validar a ativação. Tente novamente em instantes.';
     }
 }
 ?>

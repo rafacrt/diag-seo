@@ -38,7 +38,8 @@ if (isset($_POST['ajax_cupom'])) {
         ]);
         exit;
     } catch (Throwable $e) {
-        echo json_encode(['ok' => false, 'msg' => 'Erro ao processar cupom: ' . $e->getMessage()]);
+        registrar_log('Erro ao processar cupom: ' . $e->getMessage(), 'ERROR');
+        echo json_encode(['ok' => false, 'msg' => 'Não foi possível validar o cupom no momento.']);
         exit;
     }
 }
@@ -102,7 +103,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['acao']) && $_POST['ac
             $sucesso = 'Instruções de PIX e Fatura geradas com sucesso! Efetue o pagamento para liberação do saldo.';
         }
     } catch (Throwable $e) {
-        $erro = 'Erro ao processar solicitação: ' . $e->getMessage();
+        registrar_log('Erro ao processar solicitação de recarga: ' . $e->getMessage(), 'ERROR');
+        $erro = 'Não foi possível processar a solicitação. Tente novamente em instantes.';
     }
 }
 

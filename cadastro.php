@@ -105,7 +105,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
             } catch (Throwable $e) {
-                $erro = 'Erro interno do servidor: ' . $e->getMessage();
+                registrar_log('Erro no cadastro: ' . $e->getMessage(), 'ERROR');
+                $erro = 'Erro interno ao concluir o cadastro. Tente novamente em instantes.';
             }
         }
     }

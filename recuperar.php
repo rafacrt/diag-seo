@@ -59,7 +59,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 enviar_email($user['email'], $assunto, $corpo_html);
             }
         } catch (Throwable $e) {
-            $erro = 'Erro ao processar solicitação: ' . $e->getMessage();
+            registrar_log('Erro na recuperação de senha: ' . $e->getMessage(), 'ERROR');
+            $erro = 'Não foi possível processar a solicitação. Tente novamente em instantes.';
             $sucesso = ''; // Limpa sucesso em caso de erro real de banco
         }
     }
