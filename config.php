@@ -418,41 +418,6 @@ function e(string $s): string
     return htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
 }
 
-function nota_cor(string $nota): string
-{
-    if (!is_numeric($nota)) {
-        return match (strtolower(trim($nota))) {
-            'passing', 'aprovado', 'a' => '#2E7D32',
-            'warning', 'atenção', 'b', 'c' => '#E65100',
-            default => '#D32F2F'
-        };
-    }
-    $v = (int) $nota;
-    if ($v >= 90)
-        return '#2E7D32';
-    if ($v >= 50)
-        return '#E65100';
-    return '#D32F2F';
-}
-
-function status_cor(string $status): string
-{
-    return match (strtolower(trim($status))) {
-        'bom' => '#2E7D32',
-        'médio' => '#E65100',
-        default => '#D32F2F',
-    };
-}
-
-function prioridade_cor(string $p): string
-{
-    return match (strtolower(trim($p))) {
-        'baixa' => '#2E7D32',
-        'média' => '#E65100',
-        default => '#D32F2F',
-    };
-}
-
 // ─── Helpers Financeiros ─────────────────────────────────────
 function obterCustoRelatorioPadrao(): float
 {
