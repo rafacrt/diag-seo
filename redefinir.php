@@ -102,15 +102,8 @@ if ($token_valido && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['nova
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.2/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap-icons/1.11.3/font/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="assets/auth.css?v=1">
     <style>
-        :root {
-            --primary-gradient: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            --background-dark: #0f172a;
-            --card-bg: rgba(255, 255, 255, 0.95);
-            --font-title: 'Outfit', 'Plus Jakarta Sans', sans-serif;
-            --font-body: 'Plus Jakarta Sans', sans-serif;
-        }
-
         body {
             font-family: var(--font-body);
             background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
@@ -122,31 +115,6 @@ if ($token_valido && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['nova
             color: #334155;
             position: relative;
             overflow-x: hidden;
-        }
-
-        /* Efeito de fundo decorativo premium */
-        body::before {
-            content: '';
-            position: absolute;
-            width: 400px;
-            height: 400px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(37, 99, 235, 0.15) 0%, rgba(37, 99, 235, 0) 70%);
-            top: -100px;
-            right: -100px;
-            z-index: 0;
-        }
-
-        body::after {
-            content: '';
-            position: absolute;
-            width: 500px;
-            height: 500px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(29, 78, 216, 0.1) 0%, rgba(29, 78, 216, 0) 70%);
-            bottom: -150px;
-            left: -150px;
-            z-index: 0;
         }
 
         .login-container {
@@ -210,25 +178,6 @@ if ($token_valido && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['nova
             z-index: 10;
         }
 
-        .input-group-custom .btn-toggle-pass {
-            position: absolute;
-            right: 15px;
-            top: 50%;
-            transform: translateY(-50%);
-            background: none;
-            border: none;
-            color: #94a3b8;
-            font-size: 1.1rem;
-            padding: 0;
-            cursor: pointer;
-            z-index: 12;
-            transition: color 0.2s ease;
-        }
-
-        .input-group-custom .btn-toggle-pass:hover {
-            color: #2563eb;
-        }
-
         .form-control-custom {
             width: 100%;
             padding: 12px 46px 12px 46px;
@@ -238,40 +187,6 @@ if ($token_valido && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['nova
             background-color: #f8fafc;
             color: #1e293b;
             transition: all 0.25s ease;
-        }
-
-        .form-control-custom:focus {
-            background-color: #ffffff;
-            border-color: #2563eb;
-            outline: none;
-            box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
-        }
-
-        .form-control-custom:focus + i.input-icon {
-            color: #2563eb;
-        }
-
-        .btn-submit {
-            background: var(--primary-gradient);
-            border: none;
-            color: #ffffff !important;
-            font-weight: 600;
-            padding: 13px;
-            border-radius: 12px;
-            width: 100%;
-            font-size: 0.95rem;
-            transition: all 0.3s ease;
-            box-shadow: 0 8px 16px -4px rgba(37, 99, 235, 0.3);
-            margin-top: 10px;
-        }
-
-        .btn-submit:hover,
-        .btn-submit:focus,
-        .btn-submit:active {
-            transform: translateY(-2px);
-            box-shadow: 0 12px 20px -4px rgba(37, 99, 235, 0.4);
-            filter: brightness(1.05);
-            color: #ffffff !important;
         }
 
         .alert-custom {
@@ -284,11 +199,6 @@ if ($token_valido && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['nova
             align-items: flex-start;
             gap: 10px;
             line-height: 1.4;
-        }
-
-        .alert-danger-custom {
-            background-color: #fef2f2;
-            color: #991b1b;
         }
 
         .password-strength-box {
@@ -318,17 +228,6 @@ if ($token_valido && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['nova
             font-size: 0.78rem;
             color: #64748b;
             margin-top: 25px;
-        }
-
-        .footer-text a {
-            color: #2563eb;
-            text-decoration: none;
-            font-weight: 600;
-            transition: color 0.2s ease;
-        }
-
-        .footer-text a:hover {
-            text-decoration: underline;
         }
     </style>
 </head>
